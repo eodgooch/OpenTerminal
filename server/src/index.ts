@@ -6,6 +6,7 @@ import { aiRouter } from "./routes/ai.js";
 import { allStats } from "./providers/registry.js";
 import { requireApiKey } from "./auth.js";
 import { rateLimit } from "./rateLimit.js";
+import { isAiAvailable } from "./llm/index.js";
 
 const app = express();
 
@@ -49,7 +50,7 @@ app.get("/api/status", (_req, res) => {
     ok: true,
     time: new Date().toISOString(),
     providers: allStats(),
-    ai: Boolean(process.env.ANTHROPIC_API_KEY),
+    ai: isAiAvailable(),
   });
 });
 
