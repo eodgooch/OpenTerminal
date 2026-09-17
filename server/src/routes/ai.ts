@@ -30,13 +30,13 @@ aiRouter.post("/chat", async (req, res) => {
     const response = await provider.chat({ system: SYSTEM, messages, context });
     res.json({ text: response.text });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     // A present-but-invalid/revoked key surfaces as an upstream auth error here
     // (missing keys are already caught by hasCredentials() above) — report it
     // the same actionable way as a missing key, not as a raw upstream 502.
-    if (/api[_-]?key|authentication|unauthorized/i.test(msg)) {
+    if (provider.isAuthError(err)) {
       return res.status(503).json({ error: `AI assistant unavailable: ${provider.missingCredentialHint()}` });
     }
+    const msg = err instanceof Error ? err.message : String(err);
     res.status(502).json({ error: msg });
   }
 });

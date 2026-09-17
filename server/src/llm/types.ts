@@ -28,6 +28,13 @@ export interface LlmProvider {
   /** Human-readable hint naming the missing env var, for the 503 error body. */
   missingCredentialHint(): string;
   chat(request: LlmChatRequest): Promise<LlmChatResponse>;
+  /**
+   * Whether an error thrown by chat() means the upstream rejected our credentials
+   * (invalid/revoked key) rather than any other failure — decides 503 vs 502.
+   * Checked against the provider's own typed error shape (e.g. HTTP status), not
+   * by guessing from error message text.
+   */
+  isAuthError(err: unknown): boolean;
 }
 
 /** Folds optional terminal context into the message list, ahead of the user's own messages. */

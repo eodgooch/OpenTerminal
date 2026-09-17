@@ -35,4 +35,8 @@ export const anthropicProvider: LlmProvider = {
       .join("");
     return { text, refused: false };
   },
+
+  isAuthError(err: unknown): boolean {
+    return err instanceof Anthropic.APIError && (err.status === 401 || err.status === 403);
+  },
 };

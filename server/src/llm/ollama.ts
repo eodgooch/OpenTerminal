@@ -5,6 +5,13 @@ const DEFAULT_MODEL = "gpt-oss:120b";
 const DEFAULT_BASE_URL = "https://ollama.com";
 const REQUEST_TIMEOUT_MS = 120_000;
 
+class OllamaHttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "OllamaHttpError";
+  }
+}
+
 // Hits Ollama's native /api/chat endpoint rather than its Anthropic-compatible
 // shim — see docs/adr/0001-ollama-cloud-uses-native-api-not-anthropic-shim.md.
 // No `thinking`/reasoning param is sent: no extended-thinking parity with the
@@ -37,9 +44,13 @@ export const ollamaProvider: LlmProvider = {
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      throw new Error(`ollama-cloud ${res.status}${detail ? `: ${detail}` : ""}`);
+      throw new OllamaHttpError(res.status, `ollama-cloud ${res.status}${detail ? `: ${detail}` : ""}`);
     }
     const data = await res.json();
     return { text: data?.message?.content ?? "", refused: false };
+  },
+
+  isAuthError(err: unknown): boolean {
+    return err instanceof OllamaHttpError && (err.status === 401 || err.status === 403);
   },
 };

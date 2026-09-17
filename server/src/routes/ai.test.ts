@@ -154,4 +154,18 @@ describe("POST /api/ai/chat", () => {
     expect(res.status).toHaveBeenCalledWith(502);
     expect((res.json as any).mock.calls[0][0].error).toMatch(/500/);
   });
+
+  it("returns 502, not a false-positive 503, when an upstream error's text mentions 'unauthorized' but the status isn't 401/403", async () => {
+    process.env.LLM_PROVIDER = "ollama-cloud";
+    process.env.OLLAMA_API_KEY = "test-key";
+    vi.stubGlobal("fetch", fakeFetch(400, "model access unauthorized for this region"));
+    const handler = getHandler("/chat");
+    const req = { body: { messages: [{ role: "user", content: "hi" }] } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(res.status).toHaveBeenCalledWith(502);
+    expect((res.json as any).mock.calls[0][0].error).toMatch(/unauthorized for this region/);
+  });
 });
