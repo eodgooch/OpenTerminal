@@ -1,0 +1,5 @@
+# Ollama Cloud provider uses Ollama's native API, not its Anthropic-compatible shim
+
+Ollama Cloud exposes two ways to reach it: a native `https://ollama.com/api/chat` endpoint, and an Anthropic Messages-API-compatible shim at `https://ollama.com/v1/messages` that the existing `@anthropic-ai/sdk` client could be pointed at directly (via `authToken` + a custom `baseURL`) with almost no new code. We chose the native endpoint instead, via a small dedicated client, because Ollama's own docs describe the shim as incomplete — tool-choice controls and hosted web search aren't fully supported, and extended thinking only accepts `budget_tokens` without enforcing it, with unclear behavior for the `thinking: { type: "adaptive" }` mode this project already sends to Anthropic. Building against Ollama's first-class API avoids inheriting undocumented gaps in a compatibility layer, and keeps the same shape (`/api/chat`) that self-hosted local Ollama would use if that's added later.
+
+**Consequence**: the `ollama-cloud` LLM Provider does not send the `thinking` param at all — no extended-thinking parity with the `anthropic` provider for now.
