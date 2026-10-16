@@ -16,6 +16,18 @@ function getHandler(path: string) {
   return layer.route.stack[0].handle as (req: Request, res: Response, next: () => void) => unknown;
 }
 
+function rssXml(items: Array<{ title: string; link: string; pubDate?: string }>): string {
+  const itemsXml = items
+    .map(
+      (i) =>
+        `<item><title>${i.title}</title><link>${i.link}</link>${
+          i.pubDate ? `<pubDate>${i.pubDate}</pubDate>` : ""
+        }</item>`
+    )
+    .join("");
+  return `<?xml version="1.0"?><rss><channel>${itemsXml}</channel></rss>`;
+}
+
 function mockHistoryFetch() {
   const fetchMock = vi.fn().mockImplementation((url: string) => {
     if (url.includes("api.nasdaq.com/api/autocomplete")) {
@@ -316,5 +328,107 @@ describe("GET /crypto/orderbook/:symbol", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("GET /news", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("only invokes symbol-scope sources for a symbol-scoped request", async () => {
+    const calledUrls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calledUrls.push(String(url));
+        return {
+          ok: true,
+          text: async () => rssXml([{ title: `Headline for ${url}`, link: "https://example.com/a" }]),
+        };
+      })
+    );
+
+    const handler = getHandler("/news");
+    const req = { query: { symbol: "ZZZZ1" } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(calledUrls).toHaveLength(2);
+    expect(calledUrls.some((u) => u.includes("feeds.finance.yahoo.com") && u.includes("ZZZZ1"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("news.google.com") && u.includes("ZZZZ1"))).toBe(true);
+    expect(calledUrls.some((u) => u.toLowerCase().includes("federal"))).toBe(false);
+    expect(res.json).toHaveBeenCalled();
+  });
+
+  it("only invokes global-scope sources for a non-symbol request", async () => {
+    const calledUrls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calledUrls.push(String(url));
+        return {
+          ok: true,
+          text: async () => rssXml([{ title: `Headline for ${url}`, link: "https://example.com/a" }]),
+        };
+      })
+    );
+
+    const handler = getHandler("/news");
+    const req = { query: {} } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(calledUrls).toHaveLength(2);
+    expect(calledUrls.every((u) => !u.includes("feeds.finance.yahoo.com"))).toBe(true);
+    expect(calledUrls.some((u) => u.toLowerCase().includes("stock"))).toBe(true);
+    expect(calledUrls.some((u) => u.toLowerCase().includes("federal"))).toBe(true);
+    expect(res.json).toHaveBeenCalled();
+  });
+
+  it("dedupes merged results across sources and caps at 40", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Promise.resolve({
+          ok: true,
+          text: async () =>
+            rssXml(
+              Array.from({ length: 45 }, (_, i) => ({
+                title: "Duplicate headline",
+                link: `https://example.com/${i}`,
+                pubDate: new Date(2024, 0, 1 + i).toUTCString(),
+              }))
+            ),
+        })
+      )
+    );
+
+    const handler = getHandler("/news");
+    const req = { query: { symbol: "ZZZZ2" } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    const payload = (res.json as any).mock.calls[0][0];
+    expect(payload).toHaveLength(1);
+    expect(payload.length).toBeLessThanOrEqual(40);
+  });
+
+  it("fails with 502 when every source rejects", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 503, text: async () => "" }))
+    );
+
+    const handler = getHandler("/news");
+    const req = { query: { symbol: "ZZZZ3" } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(res.status).toHaveBeenCalledWith(502);
   });
 });

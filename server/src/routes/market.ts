@@ -389,16 +389,11 @@ marketRouter.get("/news", async (req, res) => {
   const symbol = req.query.symbol ? String(req.query.symbol).toUpperCase() : null;
   try {
     const data = await cached(`news:${symbol ?? "top"}`, NEWS_TTL, async () => {
-      if (symbol) {
-        const lists = await Promise.allSettled([news.symbolNews(symbol), news.topNews(symbol + " stock")]);
-        const ok = lists.filter((r) => r.status === "fulfilled").map((r) => (r as any).value);
-        if (ok.length === 0) throw new Error("all news sources failed");
-        return news.dedupe(ok).slice(0, 40);
-      }
-      const lists = await Promise.allSettled([
-        news.topNews("stock market"),
-        news.topNews("federal reserve economy"),
-      ]);
+      const scope = symbol ? "symbol" : "global";
+      const sources = news.NEWS_SOURCES.filter((s) => s.scope === scope);
+      const lists = await Promise.allSettled(
+        sources.map((s) => (s.scope === "symbol" ? s.fetch(symbol as string) : s.fetch()))
+      );
       const ok = lists.filter((r) => r.status === "fulfilled").map((r) => (r as any).value);
       if (ok.length === 0) throw new Error("all news sources failed");
       return news.dedupe(ok).slice(0, 40);
