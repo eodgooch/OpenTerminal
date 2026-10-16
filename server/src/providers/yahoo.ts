@@ -3,8 +3,10 @@
 // fleet by blocking that one string (observed: sustained HTTP 429 from Yahoo
 // for the previous fixed UA, while other realistic UAs on the same IP worked).
 // So pick one UA per server process from a small pool of plausible, current,
-// OS/browser-diverse strings — sticky for the process lifetime so our cookie/
-// crumb session stays consistent — and let operators pin their own explicitly.
+// OS/browser-diverse strings, staying on it (so our cookie/crumb session
+// stays consistent) until it draws a 429, at which point we rotate to the
+// next untried pool entry — see rotateUserAgent() below — and let operators
+// pin their own explicitly.
 const UA_POOL = [
   "Mozilla/5.0 (X11; Linux x86_64; rv:141.0) Gecko/20100101 Firefox/141.0",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
@@ -13,13 +15,27 @@ const UA_POOL = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0",
 ];
 
-function selectUserAgent(): string {
-  const pinned = process.env.YAHOO_USER_AGENT?.trim();
-  if (pinned) return pinned;
-  return UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
-}
+const pinnedUA = process.env.YAHOO_USER_AGENT?.trim() || null;
+// Shuffled once per process: the order we try pool entries in if the current
+// one turns out to be blocked. Pinned installs never rotate.
+const uaOrder = pinnedUA ? [pinnedUA] : [...UA_POOL].sort(() => Math.random() - 0.5);
+let uaOrderIndex = 0;
+let UA = uaOrder[0];
 
-const UA = selectUserAgent();
+// A UA can be blocked from the start (e.g. shared/sandboxed egress IPs that
+// already tripped Yahoo's throttle for that exact string) rather than only
+// becoming blocked over time, so a 429 can't be assumed to mean real
+// throttling until every pool entry has been tried. Switching UA also means
+// starting a fresh crumb/cookie session, since that session is tied to the UA
+// it was fetched with.
+function rotateUserAgent(): boolean {
+  if (uaOrderIndex >= uaOrder.length - 1) return false;
+  uaOrderIndex++;
+  UA = uaOrder[uaOrderIndex];
+  session = null;
+  sessionFailedUntil = 0;
+  return true;
+}
 
 export type Quote = {
   symbol: string;
@@ -108,31 +124,39 @@ function release(): void {
 }
 
 async function yfetch(url: string, withCrumb = false): Promise<any> {
-  if (Date.now() < cooldownUntil) {
-    throw new Error("yahoo rate-limited (cooling down)");
-  }
-  const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
-  let full = url;
-  await acquire();
-  try {
-    if (withCrumb) {
-      const s = await getSession();
-      headers.Cookie = s.cookie;
-      full += (url.includes("?") ? "&" : "?") + "crumb=" + encodeURIComponent(s.crumb);
+  // Bounded by the UA pool size: each pass either returns, throws, or rotates
+  // to a not-yet-tried UA and loops, so this can run at most uaOrder.length times.
+  for (;;) {
+    if (Date.now() < cooldownUntil) {
+      throw new Error("yahoo rate-limited (cooling down)");
     }
-    const res = await fetch(full, { headers });
-    if (!res.ok) {
-      if (res.status === 429) {
-        consecutive429s++;
-        cooldownUntil = Date.now() + Math.min(30_000 * consecutive429s, 5 * 60_000);
+    const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
+    let full = url;
+    await acquire();
+    try {
+      if (withCrumb) {
+        const s = await getSession();
+        headers.Cookie = s.cookie;
+        full += (url.includes("?") ? "&" : "?") + "crumb=" + encodeURIComponent(s.crumb);
       }
-      if (withCrumb && (res.status === 401 || res.status === 403)) session = null;
-      throw new Error(`yahoo ${res.status} for ${url}`);
+      const res = await fetch(full, { headers });
+      if (!res.ok) {
+        if (res.status === 429) {
+          if (rotateUserAgent()) {
+            consecutive429s = 0;
+            continue; // retry immediately with the freshly-rotated UA
+          }
+          consecutive429s++;
+          cooldownUntil = Date.now() + Math.min(30_000 * consecutive429s, 5 * 60_000);
+        }
+        if (withCrumb && (res.status === 401 || res.status === 403)) session = null;
+        throw new Error(`yahoo ${res.status} for ${url}`);
+      }
+      consecutive429s = 0;
+      return res.json();
+    } finally {
+      release();
     }
-    consecutive429s = 0;
-    return res.json();
-  } finally {
-    release();
   }
 }
 
