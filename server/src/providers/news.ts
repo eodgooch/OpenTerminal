@@ -39,6 +39,11 @@ export async function topNews(query = "stock market"): Promise<NewsItem[]> {
   return fetchRss(url, "Google News", null);
 }
 
+export async function nasdaqNews(symbol: string): Promise<NewsItem[]> {
+  const url = `https://www.nasdaq.com/feed/rssoutbound?symbol=${encodeURIComponent(symbol)}`;
+  return fetchRss(url, "Nasdaq", symbol);
+}
+
 export async function fedReserveNews(): Promise<NewsItem[]> {
   return fetchRss("https://www.federalreserve.gov/feeds/press_all.xml", "Federal Reserve", null);
 }
@@ -50,6 +55,7 @@ export type NewsSource =
 export const NEWS_SOURCES: NewsSource[] = [
   { name: "yahoo-symbol-rss", scope: "symbol", fetch: (symbol) => symbolNews(symbol) },
   { name: "google-symbol-rss", scope: "symbol", fetch: (symbol) => topNews(`${symbol} stock`) },
+  { name: "nasdaq-press-releases", scope: "symbol", fetch: (symbol) => nasdaqNews(symbol) },
   { name: "google-market-rss", scope: "global", fetch: () => topNews("stock market") },
   { name: "google-fed-rss", scope: "global", fetch: () => topNews("federal reserve economy") },
   { name: "fed-reserve-press-releases", scope: "global", fetch: () => fedReserveNews() },

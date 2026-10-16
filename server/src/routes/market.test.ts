@@ -355,9 +355,10 @@ describe("GET /news", () => {
 
     await handler(req, res, () => {});
 
-    expect(calledUrls).toHaveLength(2);
+    expect(calledUrls).toHaveLength(3);
     expect(calledUrls.some((u) => u.includes("feeds.finance.yahoo.com") && u.includes("ZZZZ1"))).toBe(true);
     expect(calledUrls.some((u) => u.includes("news.google.com") && u.includes("ZZZZ1"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("nasdaq.com") && u.includes("ZZZZ1"))).toBe(true);
     expect(calledUrls.some((u) => u.toLowerCase().includes("federal"))).toBe(false);
     expect(calledUrls.some((u) => u.includes("federalreserve.gov"))).toBe(false);
     expect(res.json).toHaveBeenCalled();
@@ -384,6 +385,7 @@ describe("GET /news", () => {
 
     expect(calledUrls).toHaveLength(3);
     expect(calledUrls.every((u) => !u.includes("feeds.finance.yahoo.com"))).toBe(true);
+    expect(calledUrls.every((u) => !u.includes("nasdaq.com"))).toBe(true);
     expect(calledUrls.some((u) => u.toLowerCase().includes("stock"))).toBe(true);
     expect(calledUrls.some((u) => u.toLowerCase().includes("federal"))).toBe(true);
     expect(calledUrls.some((u) => u.includes("federalreserve.gov"))).toBe(true);
