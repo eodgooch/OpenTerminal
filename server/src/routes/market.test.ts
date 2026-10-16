@@ -466,3 +466,43 @@ describe("GET /news", () => {
     expect(res.status).toHaveBeenCalledWith(502);
   });
 });
+
+describe("GET /recap", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("fetches news via the NEWS_SOURCES registry's global scope, not a hardcoded two-call list", async () => {
+    // "recap:full" and "news:recap" are fixed, symbol-less cache keys, so bypass the
+    // real module-level cache (as the GET /history/:symbol cache-TTL tests above do
+    // with cachedSpy) to keep this test isolated from the real one.
+    vi.spyOn(cacheModule, "cached").mockImplementation((_key, _ttl, fn) => fn());
+
+    const calledUrls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calledUrls.push(String(url));
+        return {
+          ok: true,
+          json: async () => ({ data: [] }),
+          text: async () => rssXml([{ title: `Headline for ${url}`, link: "https://example.com/a" }]),
+        };
+      })
+    );
+
+    const handler = getHandler("/recap");
+    const req = { query: {} } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(calledUrls.filter((u) => u.includes("news.google.com"))).toHaveLength(2);
+    expect(calledUrls.some((u) => u.includes("federalreserve.gov"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("feeds.content.dowjones.io"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("cnbc.com"))).toBe(true);
+    expect(calledUrls.every((u) => !u.includes("feeds.finance.yahoo.com"))).toBe(true);
+    expect(calledUrls.every((u) => !u.includes("nasdaq.com/feed/rssoutbound"))).toBe(true);
+  });
+});

@@ -744,10 +744,8 @@ marketRouter.get("/recap", async (req, res) => {
         cached("fred:VIXCLS", 300_000, () => fred.latest("VIXCLS")).catch(() => null),
         marketRows("us"),
         cached("news:recap", NEWS_TTL, async () => {
-          const lists = await Promise.allSettled([
-            news.topNews("stock market"),
-            news.topNews("federal reserve economy"),
-          ]);
+          const sources = news.NEWS_SOURCES.filter((s) => s.scope === "global");
+          const lists = await Promise.allSettled(sources.map((s) => s.fetch()));
           const ok = lists.filter((r) => r.status === "fulfilled").map((r) => (r as any).value);
           if (ok.length === 0) throw new Error("all news sources failed");
           return news.dedupe(ok);
