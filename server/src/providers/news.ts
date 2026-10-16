@@ -48,6 +48,11 @@ export async function fedReserveNews(): Promise<NewsItem[]> {
   return fetchRss("https://www.federalreserve.gov/feeds/press_all.xml", "Federal Reserve", null);
 }
 
+export async function marketWatchNews(): Promise<NewsItem[]> {
+  const url = "https://feeds.content.dowjones.io/public/rss/mw_topstories";
+  return fetchRss(url, "MarketWatch", null);
+}
+
 export type NewsSource =
   | { name: string; scope: "symbol"; fetch: (symbol: string) => Promise<NewsItem[]> }
   | { name: string; scope: "global"; fetch: () => Promise<NewsItem[]> };
@@ -59,6 +64,7 @@ export const NEWS_SOURCES: NewsSource[] = [
   { name: "google-market-rss", scope: "global", fetch: () => topNews("stock market") },
   { name: "google-fed-rss", scope: "global", fetch: () => topNews("federal reserve economy") },
   { name: "fed-reserve-press-releases", scope: "global", fetch: () => fedReserveNews() },
+  { name: "marketwatch-top-stories", scope: "global", fetch: () => marketWatchNews() },
 ];
 
 /** Merge, de-duplicate by normalized title, newest first. */
