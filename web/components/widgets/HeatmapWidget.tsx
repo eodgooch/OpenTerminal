@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 import { apiGet } from "../../lib/api";
 import { useTerminal } from "../../store/terminal";
@@ -11,9 +11,10 @@ type Cell = { symbol: string; name: string | null; sector: string; marketCap: nu
 export default function HeatmapWidget() {
   const ref = useRef<HTMLDivElement>(null);
   const setActiveSymbol = useTerminal((s) => s.setActiveSymbol);
+  const [market, setMarket] = useState<"us" | "eu">("us");
   const { data, error } = useQuery({
-    queryKey: ["heatmap"],
-    queryFn: () => apiGet<Cell[]>("/api/heatmap"),
+    queryKey: ["heatmap", market],
+    queryFn: () => apiGet<Cell[]>(`/api/heatmap?market=${market}`),
     refetchInterval: 3_000,
   });
 
@@ -122,7 +123,24 @@ export default function HeatmapWidget() {
     return () => obs.disconnect();
   }, [data, setActiveSymbol]);
 
-  if (error) return <div className="p-2 down">Error: {(error as Error).message}</div>;
-  if (!data) return <div className="p-2 dim">Loading heatmap…</div>;
-  return <div ref={ref} className="w-full h-full" />;
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex gap-1 p-1 shrink-0">
+        {(["us", "eu"] as const).map((m) => (
+          <button key={m} className={`term-btn ${market === m ? "active" : ""}`} onClick={() => setMarket(m)}>
+            {m.toUpperCase()}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 min-h-0">
+        {error ? (
+          <div className="p-2 down">Error: {(error as Error).message}</div>
+        ) : !data ? (
+          <div className="p-2 dim">Loading heatmap…</div>
+        ) : (
+          <div ref={ref} className="w-full h-full" />
+        )}
+      </div>
+    </div>
+  );
 }

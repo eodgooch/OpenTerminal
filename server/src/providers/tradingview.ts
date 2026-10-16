@@ -82,6 +82,9 @@ export type MarketRow = {
   marketCap: number | null;
   sector: string;
   exchange: string;
+  country?: string;
+  /** Currency marketCap is denominated in (europeMarketScan only). */
+  currency?: string;
 };
 
 /** Live top-N-by-market-cap snapshot across every US exchange, one request. */
@@ -120,6 +123,80 @@ export async function marketScan(limit = 1500): Promise<MarketRow[]> {
     // markets — noisy, illiquid duplicates of companies better represented
     // elsewhere; drop them so the heatmap/screener only shows primary US listings.
     .filter((r) => r.symbol && r.exchange !== "OTC");
+}
+
+// Major European markets, one TradingView scanner region per country — there
+// is no combined "whole Europe" region like "america". Each market is scanned
+// for its primary listing venue (e.g. Xetra for Germany, not the seven other
+// regional German exchanges) *and* filtered to companies domiciled there,
+// because e.g. the "germany" region also carries Apple/NVIDIA cross-listings
+// that would otherwise drown out actual German names.
+const EUROPE_MARKETS: Array<{ region: string; exchange: string; country: string }> = [
+  { region: "uk", exchange: "LSE", country: "United Kingdom" },
+  { region: "germany", exchange: "XETR", country: "Germany" },
+  { region: "france", exchange: "EURONEXT", country: "France" },
+  { region: "netherlands", exchange: "EURONEXT", country: "Netherlands" },
+  { region: "switzerland", exchange: "SIX", country: "Switzerland" },
+  { region: "italy", exchange: "MIL", country: "Italy" },
+  { region: "spain", exchange: "BME", country: "Spain" },
+  { region: "sweden", exchange: "OMXSTO", country: "Sweden" },
+  { region: "belgium", exchange: "EURONEXT", country: "Belgium" },
+];
+
+async function scanOneEuropeMarket(
+  m: { region: string; exchange: string; country: string },
+  perMarketLimit: number
+): Promise<MarketRow[]> {
+  const res = await fetch(`https://scanner.tradingview.com/${m.region}/scan`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({
+      // fundamental_currency_code (not "currency"!) is what market_cap_basic
+      // is denominated in — for UK listings "currency" is GBX (pence, the
+      // quote currency) while the market cap is reported in GBP.
+      columns: ["description", "close", "change", "market_cap_basic", "sector", "volume", "fundamental_currency_code"],
+      filter: [
+        { left: "type", operation: "equal", right: "stock" },
+        { left: "typespecs", operation: "has", right: ["common"] },
+        { left: "country", operation: "equal", right: m.country },
+        { left: "exchange", operation: "equal", right: m.exchange },
+      ],
+      sort: { sortBy: "market_cap_basic", sortOrder: "desc" },
+      range: [0, perMarketLimit],
+    }),
+  });
+  if (!res.ok) throw new Error(`tradingview scan ${m.region} ${res.status}`);
+  const json = await res.json();
+  const rows: Array<{ s: string; d: any[] }> = json?.data ?? [];
+  return rows
+    .map((r) => {
+      const [name, close, change, marketCap, sector, volume, currency] = r.d;
+      return {
+        symbol: r.s.split(":")[1],
+        name: name ?? r.s.split(":")[1],
+        price: close ?? null,
+        changePercent: change ?? null,
+        marketCap: marketCap ?? null,
+        sector: sector || "Other",
+        volume: volume ?? null,
+        exchange: m.exchange,
+        country: m.country,
+        currency: currency || undefined,
+      };
+    })
+    .filter((r) => r.symbol);
+}
+
+/**
+ * Live top-N-by-market-cap snapshot across the largest European exchanges,
+ * one request per market merged client-side (see EUROPE_MARKETS). A failure
+ * in one market doesn't take down the rest (Promise.allSettled).
+ */
+export async function europeMarketScan(limit = 1500): Promise<MarketRow[]> {
+  const perMarket = 300;
+  const results = await Promise.allSettled(EUROPE_MARKETS.map((m) => scanOneEuropeMarket(m, perMarket)));
+  const rows = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+  return rows.sort((a, b) => (b.marketCap ?? 0) - (a.marketCap ?? 0)).slice(0, limit);
 }
 
 export type EarningsInfo = {

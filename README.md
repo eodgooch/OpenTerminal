@@ -153,6 +153,10 @@ npm run dev
 
 Without credentials for the active provider, everything else still works — the AI widget just shows a friendly "unavailable" message instead of failing.
 
+One more knob, standard for the Anthropic SDK and picked up automatically:
+
+- `ANTHROPIC_BASE_URL` — point the `anthropic` provider at an Anthropic-compatible endpoint (a self-hosted gateway, an EU-hosted relay, etc.) instead of api.anthropic.com. Pair with `LLM_MODEL` above when that endpoint serves models under different ids.
+
 ### Security defaults
 
 - The API binds to `127.0.0.1` and only accepts browser requests from `http://localhost:3000` by default — nothing else on your network can reach it out of the box.

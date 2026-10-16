@@ -14,6 +14,7 @@ type Row = {
 
 export default function ScreenerWidget() {
   const setActiveSymbol = useTerminal((s) => s.setActiveSymbol);
+  const [market, setMarket] = useState<"us" | "eu">("us");
   const [sector, setSector] = useState("");
   const [changeMin, setChangeMin] = useState("");
   const [marketCapMinB, setMarketCapMinB] = useState("");
@@ -22,12 +23,13 @@ export default function ScreenerWidget() {
   const [dir, setDir] = useState<"asc" | "desc">("desc");
 
   const { data: sectors = [] } = useQuery({
-    queryKey: ["sectors"],
-    queryFn: () => apiGet<string[]>("/api/sectors"),
+    queryKey: ["sectors", market],
+    queryFn: () => apiGet<string[]>(`/api/sectors?market=${market}`),
     staleTime: 600_000,
   });
 
   const params = new URLSearchParams();
+  params.set("market", market);
   if (sector) params.set("sector", sector);
   if (changeMin) params.set("changeMin", changeMin);
   if (marketCapMinB) params.set("marketCapMin", String(Number(marketCapMinB) * 1e9));
@@ -56,6 +58,13 @@ export default function ScreenerWidget() {
   return (
     <div>
       <div className="flex gap-2 p-1 flex-wrap items-center">
+        <div className="flex gap-1">
+          {(["us", "eu"] as const).map((m) => (
+            <button key={m} className={`term-btn ${market === m ? "active" : ""}`} onClick={() => setMarket(m)}>
+              {m.toUpperCase()}
+            </button>
+          ))}
+        </div>
         <select value={sector} onChange={(e) => setSector(e.target.value)}>
           <option value="">All sectors</option>
           {sectors.map((s) => (

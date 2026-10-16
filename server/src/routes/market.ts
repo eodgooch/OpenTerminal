@@ -5,6 +5,7 @@ import * as yahoo from "../providers/yahoo.js";
 import * as stooq from "../providers/stooq.js";
 import * as nasdaq from "../providers/nasdaq.js";
 import * as fred from "../providers/fred.js";
+import * as ecb from "../providers/ecb.js";
 import * as tradingview from "../providers/tradingview.js";
 import * as coingecko from "../providers/coingecko.js";
 import * as binance from "../providers/binance.js";
@@ -410,8 +411,70 @@ const INDEX_PROXIES: Record<string, string> = {
   UUP: "Dollar Index (UUP)",
 };
 
+// ---- EU macro: ECB AAA euro-area yield curve + policy rate + HICP inflation,
+// plus key European indexes via US-listed ETF proxies (same trick as the US
+// index proxies above — Nasdaq/Yahoo already carry these tickers, so no new
+// quote provider is needed).
+
+const EU_YIELD_SERIES: Array<{ flowRef: string; key: string; tenor: string }> = [
+  { flowRef: "YC", key: "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_3M", tenor: "3M" },
+  { flowRef: "YC", key: "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_5Y", tenor: "5Y" },
+  { flowRef: "YC", key: "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y", tenor: "10Y" },
+  { flowRef: "YC", key: "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_30Y", tenor: "30Y" },
+];
+
+// Deposit facility rate — the ECB's operative policy rate since the 2024
+// operational framework review (not the main refinancing rate).
+const EU_POLICY_RATE = { flowRef: "FM", key: "D.U2.EUR.4F.KR.DFR.LEV" };
+const EU_INFLATION = { flowRef: "ICP", key: "M.U2.N.000000.4.ANR" }; // HICP, y/y
+
+const EU_INDEX_PROXIES: Record<string, string> = {
+  FEZ: "Euro Stoxx 50 (FEZ)",
+  IEUR: "MSCI Europe (IEUR)",
+  EWG: "Germany (EWG)",
+  EWU: "UK (EWU)",
+  EWQ: "France (EWQ)",
+  EWI: "Italy (EWI)",
+};
+
 marketRouter.get("/macro", async (req, res) => {
   try {
+    if (req.query.region === "eu") {
+      const [yieldResults, policyRate, inflation, quotes] = await Promise.all([
+        Promise.allSettled(
+          EU_YIELD_SERIES.map((s) => cached(`ecb:${s.key}`, 300_000, () => ecb.latest(s.flowRef, s.key)))
+        ),
+        cached(`ecb:${EU_POLICY_RATE.key}`, 300_000, () => ecb.latest(EU_POLICY_RATE.flowRef, EU_POLICY_RATE.key)).catch(
+          () => null
+        ),
+        cached(`ecb:${EU_INFLATION.key}`, 300_000, () => ecb.latest(EU_INFLATION.flowRef, EU_INFLATION.key)).catch(
+          () => null
+        ),
+        getQuotes(Object.keys(EU_INDEX_PROXIES)),
+      ]);
+      const yields = EU_YIELD_SERIES.map((s, i) => {
+        const r = yieldResults[i];
+        return { tenor: s.tenor, value: r.status === "fulfilled" ? r.value?.value ?? null : null };
+      }).filter((y) => y.value !== null);
+
+      const indexes = quotes.map((q) => ({
+        symbol: q.symbol,
+        label: EU_INDEX_PROXIES[q.symbol] ?? q.symbol,
+        price: q.price,
+        changePercent: q.changePercent,
+      }));
+
+      if (yields.length === 0 && indexes.length === 0) throw new Error("no EU macro data from any provider");
+      res.json({
+        yields,
+        vix: null,
+        indexes,
+        policyRate: policyRate?.value ?? null,
+        inflation: inflation?.value ?? null,
+      });
+      return;
+    }
+
     const [yieldResults, vix, quotes] = await Promise.all([
       Promise.allSettled(YIELD_SERIES.map((s) => cached(`fred:${s.id}`, 300_000, () => fred.latest(s.id)))),
       cached("fred:VIXCLS", 300_000, () => fred.latest("VIXCLS")).catch(() => null),
@@ -430,21 +493,59 @@ marketRouter.get("/macro", async (req, res) => {
     }));
 
     if (yields.length === 0 && indexes.length === 0) throw new Error("no macro data from any provider");
-    res.json({ yields, vix: vix?.value ?? null, indexes });
+    res.json({ yields, vix: vix?.value ?? null, indexes, policyRate: null, inflation: null });
   } catch (err) {
     fail(req, res, err);
   }
 });
 
 // ---- heatmap + screener over the full market (TradingView scanner — live) ----
+// ?market=eu switches from the whole-US scan to the merged major-European-
+// exchanges scan (see tradingview.europeMarketScan).
 
-async function marketRows(): Promise<tradingview.MarketRow[]> {
+function marketParam(req: any): "us" | "eu" {
+  return req.query.market === "eu" ? "eu" : "us";
+}
+
+// TradingView reports market cap in each stock's own listing currency (SEK,
+// GBP, CHF, ...), not EUR — left unconverted, a 1.2T SEK Swedish company would
+// outrank a 550B EUR Dutch one in the merged EU scan. Reference rates come
+// from the same ECB source as the EU macro widget, so this needs no new
+// provider (rate = local-currency units per 1 EUR).
+const EU_FX_SERIES: Record<string, { flowRef: string; key: string }> = {
+  GBP: { flowRef: "EXR", key: "D.GBP.EUR.SP00.A" },
+  SEK: { flowRef: "EXR", key: "D.SEK.EUR.SP00.A" },
+  CHF: { flowRef: "EXR", key: "D.CHF.EUR.SP00.A" },
+};
+
+async function eurFxRates(): Promise<Record<string, number>> {
+  const rates: Record<string, number> = { EUR: 1 };
+  const entries = await Promise.all(
+    Object.entries(EU_FX_SERIES).map(async ([ccy, s]) => {
+      const point = await cached(`ecb:fx:${ccy}`, 3_600_000, () => ecb.latest(s.flowRef, s.key)).catch(() => null);
+      return [ccy, point?.value ?? null] as const;
+    })
+  );
+  for (const [ccy, rate] of entries) if (rate) rates[ccy] = rate;
+  return rates;
+}
+
+async function marketRows(market: "us" | "eu"): Promise<tradingview.MarketRow[]> {
+  if (market === "eu") {
+    return cached("marketscan:eu", 5_000, async () => {
+      const [rows, fx] = await Promise.all([tradingview.europeMarketScan(1500), eurFxRates()]);
+      return rows.map((r) => {
+        const rate = r.currency ? fx[r.currency] : undefined;
+        return rate && r.marketCap ? { ...r, marketCap: r.marketCap / rate } : r;
+      });
+    });
+  }
   return cached("marketscan:full", 3_000, () => tradingview.marketScan(1500));
 }
 
 marketRouter.get("/heatmap", async (req, res) => {
   try {
-    const rows = await marketRows();
+    const rows = await marketRows(marketParam(req));
     const top = rows.filter((r) => r.marketCap).slice(0, 150);
     res.json(top);
   } catch (err) {
@@ -454,7 +555,7 @@ marketRouter.get("/heatmap", async (req, res) => {
 
 marketRouter.get("/screener", async (req, res) => {
   try {
-    let rows = await marketRows();
+    let rows = await marketRows(marketParam(req));
     const num = (v: unknown) => (v === undefined ? undefined : Number(v));
     const f = {
       sector: req.query.sector ? String(req.query.sector) : undefined,
@@ -484,9 +585,9 @@ marketRouter.get("/screener", async (req, res) => {
   }
 });
 
-marketRouter.get("/sectors", async (_req, res) => {
+marketRouter.get("/sectors", async (req, res) => {
   try {
-    const rows = await marketRows();
+    const rows = await marketRows(marketParam(req));
     res.json([...new Set(rows.map((r) => r.sector))].sort());
   } catch (err) {
     res.json([]);
@@ -544,7 +645,7 @@ marketRouter.get("/recap", async (req, res) => {
       const [quotes, vix, rows, headlines] = await Promise.all([
         getQuotes(Object.keys(INDEX_PROXIES)),
         cached("fred:VIXCLS", 300_000, () => fred.latest("VIXCLS")).catch(() => null),
-        marketRows(),
+        marketRows("us"),
         cached("news:recap", NEWS_TTL, async () => {
           const lists = await Promise.allSettled([
             news.topNews("stock market"),

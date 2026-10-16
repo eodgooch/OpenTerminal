@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { apiGet, fmt, pctClass } from "../../lib/api";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from "recharts";
 import { useTerminal } from "../../store/terminal";
@@ -10,26 +11,67 @@ type MacroData = {
   yields: Array<{ tenor: string; value: number | null }>;
   vix: number | null;
   indexes: Array<{ symbol: string; label: string; price: number | null; changePercent: number | null }>;
+  policyRate: number | null;
+  inflation: number | null;
 };
 
 export default function MacroWidget() {
   const setActiveSymbol = useTerminal((s) => s.setActiveSymbol);
+  const [region, setRegion] = useState<"us" | "eu">("us");
   const { data, error } = useQuery({
-    queryKey: ["macro"],
-    queryFn: () => apiGet<MacroData>("/api/macro"),
+    queryKey: ["macro", region],
+    queryFn: () => apiGet<MacroData>(`/api/macro?region=${region}`),
     refetchInterval: 1_000,
   });
 
-  if (error) return <div className="p-2 down">Error: {(error as Error).message}</div>;
-  if (!data) return <div className="p-2 dim">Loading macro data…</div>;
+  return (
+    <div>
+      <div className="flex gap-1 p-1">
+        {(["us", "eu"] as const).map((r) => (
+          <button key={r} className={`term-btn ${region === r ? "active" : ""}`} onClick={() => setRegion(r)}>
+            {r.toUpperCase()}
+          </button>
+        ))}
+      </div>
+      {error ? (
+        <div className="p-2 down">Error: {(error as Error).message}</div>
+      ) : !data ? (
+        <div className="p-2 dim">Loading macro data…</div>
+      ) : (
+        <MacroBody data={data} region={region} setActiveSymbol={setActiveSymbol} />
+      )}
+    </div>
+  );
+}
 
+function MacroBody({
+  data,
+  region,
+  setActiveSymbol,
+}: {
+  data: MacroData;
+  region: "us" | "eu";
+  setActiveSymbol: (s: string) => void;
+}) {
   return (
     <div>
       <div className="px-2 py-1 dim text-[10px] uppercase flex justify-between">
-        <span>US Treasury Yield Curve</span>
-        {data.vix !== null && (
+        <span>{region === "eu" ? "Euro Area AAA Yield Curve" : "US Treasury Yield Curve"}</span>
+        {region === "us" && data.vix !== null && (
           <span className="cursor-pointer" onClick={() => setActiveSymbol("^VIX")}>
             VIX <Flash value={data.vix} className="amber">{fmt(data.vix, 2)}</Flash>
+          </span>
+        )}
+        {region === "eu" && (data.policyRate !== null || data.inflation !== null) && (
+          <span>
+            {data.policyRate !== null && (
+              <>ECB depo <Flash value={data.policyRate} className="amber">{fmt(data.policyRate, 2)}%</Flash></>
+            )}
+            {data.inflation !== null && (
+              <>
+                {" "}HICP <Flash value={data.inflation} className="amber">{fmt(data.inflation, 1)}%</Flash>
+              </>
+            )}
           </span>
         )}
       </div>
