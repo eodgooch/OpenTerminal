@@ -16,7 +16,7 @@ import {
 import { apiGet, fmt, fmtBig, type Candle } from "../../lib/api";
 import { chartFreshnessState, type FreshnessState } from "../../lib/chartFreshness";
 import { sma, ema, vwap, rsi, macd, bollinger, type Point } from "../../lib/indicators";
-import { applyLiveTick, shouldApplyLiveTick } from "../../lib/liveTick";
+import { applyLiveTick, LIVE_TICK_RANGE, shouldApplyLiveTick } from "../../lib/liveTick";
 import { nyseMarketStatus } from "../../lib/marketHours";
 import { useLivePrice } from "../../lib/useLivePrice";
 import { useWidgetSymbol, type WidgetInstance } from "../../store/terminal";
@@ -53,14 +53,14 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
   const { data: candles, error } = useQuery({
     queryKey: ["history", symbol, range],
     queryFn: () => apiGet<Candle[]>(`/api/history/${encodeURIComponent(symbol)}?range=${range}`),
-    refetchInterval: range === "1D" ? 8_000 : 60_000,
+    refetchInterval: range === LIVE_TICK_RANGE ? 8_000 : 60_000,
   });
 
   // Same fast-polled quote the quote widget uses, shared via the react-query
   // cache — only polled while on 1D, where live-ticking applies.
   const { data: liveQuote, error: liveQuoteError, dataUpdatedAt: liveQuoteUpdatedAt } = useLivePrice(
     symbol,
-    range === "1D"
+    range === LIVE_TICK_RANGE
   );
   const livePrice = liveQuote?.price ?? null;
 
@@ -69,7 +69,7 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
   // (shown as "stale") even though nothing else about the component changed.
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
-    if (range !== "1D") return;
+    if (range !== LIVE_TICK_RANGE) return;
     const t = setInterval(() => setNowTick(Date.now()), 1_000);
     return () => clearInterval(t);
   }, [range]);
@@ -82,6 +82,7 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
     range,
     marketOpen: nyseMarketStatus(new Date(nowTick)).open,
     quoteHasError: !!liveQuoteError,
+    historyHasError: !!error,
     lastQuoteUpdatedAt: liveQuoteUpdatedAt || null,
     now: nowTick,
   });

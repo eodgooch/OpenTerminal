@@ -133,4 +133,42 @@ describe("chartFreshnessState", () => {
       })
     ).toBe("stale");
   });
+
+  it("is 'stale' when the market is open, the quote feed is healthy, but the history fetch is erroring (e.g. the intraday provider failed over to a cached/fallback series)", () => {
+    expect(
+      chartFreshnessState({
+        range: "1D",
+        marketOpen: true,
+        quoteHasError: false,
+        lastQuoteUpdatedAt: NOW - 500,
+        historyHasError: true,
+        now: NOW,
+      })
+    ).toBe("stale");
+  });
+
+  it("is 'closed' (not 'stale') when the market is closed even if the history fetch is also erroring", () => {
+    expect(
+      chartFreshnessState({
+        range: "1D",
+        marketOpen: false,
+        quoteHasError: false,
+        lastQuoteUpdatedAt: NOW,
+        historyHasError: true,
+        now: NOW,
+      })
+    ).toBe("closed");
+  });
+
+  it("defaults historyHasError to false when omitted, preserving prior behavior", () => {
+    expect(
+      chartFreshnessState({
+        range: "1D",
+        marketOpen: true,
+        quoteHasError: false,
+        lastQuoteUpdatedAt: NOW - 500,
+        now: NOW,
+      })
+    ).toBe("live");
+  });
 });

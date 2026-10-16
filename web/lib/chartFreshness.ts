@@ -1,3 +1,5 @@
+import { LIVE_TICK_RANGE } from "./liveTick";
+
 export type FreshnessState = "live" | "closed" | "stale";
 
 /**
@@ -12,10 +14,12 @@ export type FreshnessState = "live" | "closed" | "stale";
  *  2. Market closed -> "closed". This takes priority even over an erroring
  *     quote feed: off-hours a quote poll failing (or just not being fresh)
  *     is expected and benign, not something to flag as "stale".
- *  3. Market open but the quote feed is erroring, or hasn't produced a
- *     successful update recently (within `staleAfterMs` of `now`) -> "stale".
- *     This is what catches a dead/rate-limited provider serving cached or
- *     fallback data without misleadingly showing "LIVE".
+ *  3. Market open but the quote feed is erroring, hasn't produced a
+ *     successful update recently (within `staleAfterMs` of `now`), or the
+ *     chart's own history fetch is erroring (e.g. the intraday provider
+ *     failed over to cached/fallback data per #7) -> "stale". This is what
+ *     catches a dead/rate-limited provider serving cached or fallback data
+ *     without misleadingly showing "LIVE".
  *  4. Otherwise -> "live".
  *
  * Pure function of its inputs (including `now`) so it's directly testable
@@ -26,15 +30,18 @@ export function chartFreshnessState(params: {
   marketOpen: boolean;
   quoteHasError: boolean;
   lastQuoteUpdatedAt: number | null;
+  historyHasError?: boolean;
   now: number;
   staleAfterMs?: number;
 }): FreshnessState | null {
-  const { range, marketOpen, quoteHasError, lastQuoteUpdatedAt, now, staleAfterMs = 5_000 } = params;
+  const { range, marketOpen, quoteHasError, lastQuoteUpdatedAt, historyHasError = false, now, staleAfterMs = 5_000 } =
+    params;
 
-  if (range !== "1D") return null;
+  if (range !== LIVE_TICK_RANGE) return null;
   if (!marketOpen) return "closed";
 
   if (quoteHasError) return "stale";
+  if (historyHasError) return "stale";
   if (lastQuoteUpdatedAt === null) return "stale";
   if (now - lastQuoteUpdatedAt > staleAfterMs) return "stale";
 
