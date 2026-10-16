@@ -53,6 +53,11 @@ export async function marketWatchNews(): Promise<NewsItem[]> {
   return fetchRss(url, "MarketWatch", null);
 }
 
+export async function cnbcNews(): Promise<NewsItem[]> {
+  const url = "https://www.cnbc.com/id/100003114/device/rss/rss.html";
+  return fetchRss(url, "CNBC", null);
+}
+
 export type NewsSource =
   | { name: string; scope: "symbol"; fetch: (symbol: string) => Promise<NewsItem[]> }
   | { name: string; scope: "global"; fetch: () => Promise<NewsItem[]> };
@@ -65,6 +70,7 @@ export const NEWS_SOURCES: NewsSource[] = [
   { name: "google-fed-rss", scope: "global", fetch: () => topNews("federal reserve economy") },
   { name: "fed-reserve-press-releases", scope: "global", fetch: () => fedReserveNews() },
   { name: "marketwatch-top-stories", scope: "global", fetch: () => marketWatchNews() },
+  { name: "cnbc-top-news", scope: "global", fetch: () => cnbcNews() },
 ];
 
 /** Merge, de-duplicate by normalized title, newest first. */
