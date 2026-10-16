@@ -227,6 +227,25 @@ marketRouter.get("/quotes", async (req, res) => {
 
 // ---- history / candles ----
 
+// Nasdaq's history endpoint has no interval parameter — it always returns
+// daily bars, for every range, and succeeds rather than throwing. For 1D/5D
+// that means "success" but the wrong resolution, so Nasdaq can't be first in
+// the fallback chain for those ranges the way it safely can for longer ones.
+const INTRADAY_RANGES = new Set(["1D", "5D"]);
+
+function historyProviders(symbol: string, rangeKey: string): Array<[string, () => Promise<yahoo.Candle[]>]> {
+  const nasdaqAttempt: [string, () => Promise<yahoo.Candle[]>] = ["nasdaq", () => nasdaq.history(symbol, rangeKey)];
+  const yahooAttempt: [string, () => Promise<yahoo.Candle[]>] = [
+    "yahoo",
+    () => yahoo.history(symbol, yahooRange(rangeKey).range, yahooRange(rangeKey).interval),
+  ];
+  const stooqAttempt: [string, () => Promise<yahoo.Candle[]>] = ["stooq", () => stooq.history(symbol)];
+
+  return INTRADAY_RANGES.has(rangeKey)
+    ? [yahooAttempt, nasdaqAttempt, stooqAttempt]
+    : [nasdaqAttempt, yahooAttempt, stooqAttempt];
+}
+
 marketRouter.get("/history/:symbol", async (req, res) => {
   const symbol = req.params.symbol.toUpperCase();
   const rangeKey = String(req.query.range ?? "6M");
@@ -236,11 +255,7 @@ marketRouter.get("/history/:symbol", async (req, res) => {
         ? binance.history(symbol, rangeKey)
         : isVix(symbol)
         ? vixHistory(rangeKey)
-        : withFallback([
-            ["nasdaq", () => nasdaq.history(symbol, rangeKey)],
-            ["yahoo", () => yahoo.history(symbol, yahooRange(rangeKey).range, yahooRange(rangeKey).interval)],
-            ["stooq", () => stooq.history(symbol)],
-          ])
+        : withFallback(historyProviders(symbol, rangeKey))
     );
     if (!Array.isArray(data) || data.length === 0) throw new Error("empty history from all providers");
     res.json(data);
