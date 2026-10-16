@@ -10,10 +10,13 @@ import {
   AreaSeries,
   BarSeries,
   type IChartApi,
+  type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { apiGet, fmt, fmtBig, type Candle } from "../../lib/api";
 import { sma, ema, vwap, rsi, macd, bollinger, type Point } from "../../lib/indicators";
+import { applyLiveTick, shouldApplyLiveTick } from "../../lib/liveTick";
+import { useLivePrice } from "../../lib/useLivePrice";
 import { useWidgetSymbol, type WidgetInstance } from "../../store/terminal";
 
 const RANGES = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"] as const;
@@ -40,12 +43,21 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
   const [legend, setLegend] = useState<Candle | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const priceSeriesRef = useRef<ISeriesApi<any> | null>(null);
+  // Baseline for merging live ticks: the last authoritative candle, extended
+  // in place as ticks come in, until the next history refetch replaces it.
+  const lastMergedCandleRef = useRef<Candle | null>(null);
 
   const { data: candles, error } = useQuery({
     queryKey: ["history", symbol, range],
     queryFn: () => apiGet<Candle[]>(`/api/history/${encodeURIComponent(symbol)}?range=${range}`),
     refetchInterval: range === "1D" ? 8_000 : 60_000,
   });
+
+  // Same fast-polled quote the quote widget uses, shared via the react-query
+  // cache — only polled while on 1D, where live-ticking applies.
+  const { data: liveQuote } = useLivePrice(symbol, range === "1D");
+  const livePrice = liveQuote?.price ?? null;
 
   // Fast time -> candle lookup for the crosshair legend, independent of chart type.
   const byTime = useMemo(() => {
@@ -146,26 +158,27 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
     const upColor = "#00c853";
     const downColor = "#ff3d3d";
 
+    let priceSeries: ISeriesApi<any>;
     if (chartType === "candles") {
-      chart
-        .addSeries(CandlestickSeries, {
-          upColor, downColor, borderUpColor: upColor, borderDownColor: downColor,
-          wickUpColor: upColor, wickDownColor: downColor,
-        })
-        .setData(candles.map((c) => ({ time: ts(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
+      priceSeries = chart.addSeries(CandlestickSeries, {
+        upColor, downColor, borderUpColor: upColor, borderDownColor: downColor,
+        wickUpColor: upColor, wickDownColor: downColor,
+      });
+      priceSeries.setData(candles.map((c) => ({ time: ts(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
     } else if (chartType === "bars") {
-      chart
-        .addSeries(BarSeries, { upColor, downColor })
-        .setData(candles.map((c) => ({ time: ts(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
+      priceSeries = chart.addSeries(BarSeries, { upColor, downColor });
+      priceSeries.setData(candles.map((c) => ({ time: ts(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
     } else if (chartType === "line") {
-      chart
-        .addSeries(LineSeries, { color: "#ff9900", lineWidth: 1 })
-        .setData(candles.map((c) => ({ time: ts(c.time), value: c.close })));
+      priceSeries = chart.addSeries(LineSeries, { color: "#ff9900", lineWidth: 1 });
+      priceSeries.setData(candles.map((c) => ({ time: ts(c.time), value: c.close })));
     } else {
-      chart
-        .addSeries(AreaSeries, { lineColor: "#ff9900", topColor: "rgba(255,153,0,0.25)", bottomColor: "rgba(255,153,0,0)" })
-        .setData(candles.map((c) => ({ time: ts(c.time), value: c.close })));
+      priceSeries = chart.addSeries(AreaSeries, { lineColor: "#ff9900", topColor: "rgba(255,153,0,0.25)", bottomColor: "rgba(255,153,0,0)" });
+      priceSeries.setData(candles.map((c) => ({ time: ts(c.time), value: c.close })));
     }
+    priceSeriesRef.current = priceSeries;
+    // Reset the live-tick baseline to the fresh authoritative last candle —
+    // this is what reconciles any in-progress live ticks with the server data.
+    lastMergedCandleRef.current = candles[candles.length - 1] ?? null;
 
     // volume histogram on its own scale at the bottom of the main pane
     const vol = chart.addSeries(HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" } });
@@ -210,7 +223,7 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
 
     chart.subscribeCrosshairMove((param) => {
       if (!param.time) {
-        setLegend(candles[candles.length - 1]);
+        setLegend(lastMergedCandleRef.current ?? candles[candles.length - 1]);
         return;
       }
       const hit = byTime.get(param.time as number);
@@ -221,8 +234,34 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
     return () => {
       chart.remove();
       chartRef.current = null;
+      priceSeriesRef.current = null;
     };
   }, [candles, chartType, indicatorData, range, byTime]);
+
+  // Lightweight live-tick: merges the fast-polled quote price into the last
+  // candle in place via series.update(), without rebuilding the whole chart.
+  // Runs only on 1D (useLivePrice is disabled off-1D, so livePrice won't change).
+  useEffect(() => {
+    const series = priceSeriesRef.current;
+    const baseline = lastMergedCandleRef.current;
+    if (!shouldApplyLiveTick({ range, lastCandle: baseline, price: livePrice })) return;
+
+    const merged = applyLiveTick(baseline as Candle, livePrice as number);
+    lastMergedCandleRef.current = merged;
+
+    if (series) {
+      if (chartType === "candles" || chartType === "bars") {
+        series.update({ time: ts(merged.time), open: merged.open, high: merged.high, low: merged.low, close: merged.close });
+      } else {
+        series.update({ time: ts(merged.time), value: merged.close });
+      }
+    }
+
+    // Keep the legend's OHLCV readout live too, but only while it's showing
+    // the last candle (default view, or crosshair resting on it) — don't
+    // clobber the legend while the user is hovering an earlier candle.
+    setLegend((prev) => (prev && prev.time === merged.time ? merged : prev));
+  }, [livePrice, range, chartType]);
 
   const toggleIndicator = (ind: Indicator) =>
     setActive((prev) => {

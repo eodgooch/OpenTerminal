@@ -1,7 +1,8 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { apiGet, fmt, fmtBig, pctClass, type Quote } from "../../lib/api";
+import { apiGet, fmt, fmtBig, pctClass } from "../../lib/api";
+import { useLivePrice } from "../../lib/useLivePrice";
 import { useWidgetSymbol, type WidgetInstance } from "../../store/terminal";
 import Flash from "../Flash";
 
@@ -9,11 +10,7 @@ type ShortVolume = { date: string; shortVolume: number; shortExemptVolume: numbe
 
 export default function QuoteWidget({ widget }: { widget: WidgetInstance }) {
   const symbol = useWidgetSymbol(widget);
-  const { data, error } = useQuery({
-    queryKey: ["quote", symbol],
-    queryFn: async () => (await apiGet<Quote[]>(`/api/quotes?symbols=${encodeURIComponent(symbol)}`))[0],
-    refetchInterval: 1_000,
-  });
+  const { data, error } = useLivePrice(symbol, true);
   // FINRA's Reg SHO file only updates once a day (next-morning), so no point polling it fast.
   const { data: shortVol } = useQuery({
     queryKey: ["short-volume", symbol],
