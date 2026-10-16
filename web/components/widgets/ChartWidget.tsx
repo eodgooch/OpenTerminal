@@ -15,6 +15,7 @@ import {
 } from "lightweight-charts";
 import { apiGet, fmt, fmtBig, type Candle } from "../../lib/api";
 import { chartFreshnessState, type FreshnessState } from "../../lib/chartFreshness";
+import { localCrosshairTimeFormatter, localTickMarkFormatter } from "../../lib/chartTime";
 import { sma, ema, vwap, rsi, macd, bollinger, type Point } from "../../lib/indicators";
 import { applyLiveTick, LIVE_TICK_RANGES, shouldApplyLiveTick } from "../../lib/liveTick";
 import { nyseMarketStatus } from "../../lib/marketHours";
@@ -179,7 +180,14 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
       layout: { background: { color: "#0a0a0a" }, textColor: "#808080", fontSize: 10, attributionLogo: false },
       grid: { vertLines: { color: "#1a1a1a" }, horzLines: { color: "#1a1a1a" } },
       crosshair: { mode: 0 },
-      timeScale: { borderColor: "#262626", timeVisible: range === "1D" || range === "5D" },
+      timeScale: {
+        borderColor: "#262626",
+        timeVisible: range === "1D" || range === "5D",
+        tickMarkFormatter: localTickMarkFormatter,
+      },
+      // Only wired in for 1D/5D — see localCrosshairTimeFormatter's comment
+      // on why it'd be unsafe for the daily+ ranges' UTC-midnight bar dates.
+      localization: LIVE_TICK_RANGES.has(range) ? { timeFormatter: localCrosshairTimeFormatter } : {},
       rightPriceScale: { borderColor: "#262626" },
       autoSize: true,
       // Mouse-wheel is left free for page scrolling — zoom via drag, pinch, or the range buttons instead.
