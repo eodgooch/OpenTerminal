@@ -342,6 +342,25 @@ describe("GET /news", () => {
       "fetch",
       vi.fn(async (url: string) => {
         calledUrls.push(String(url));
+        if (String(url).includes("company_tickers.json")) {
+          // secedgar.ts's ticker->CIK map is cached for the process lifetime once fetched
+          // successfully, so whichever test populates it first fixes every symbol later
+          // tests in this file can resolve — include ZZZZ3 here for the 502 test below.
+          return {
+            ok: true,
+            json: async () => ({
+              0: { cik_str: 320193, ticker: "ZZZZ1", title: "ZZZZ1" },
+              1: { cik_str: 3, ticker: "ZZZZ3", title: "ZZZZ3" },
+            }),
+          };
+        }
+        if (String(url).includes("browse-edgar")) {
+          return {
+            ok: true,
+            text: async () =>
+              `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><entry><title>8-K filing</title><link href="https://www.sec.gov/Archives/edgar/data/320193/x-index.htm" rel="alternate" type="text/html" /><updated>2026-10-16T16:29:07-04:00</updated></entry></feed>`,
+          };
+        }
         return {
           ok: true,
           text: async () => rssXml([{ title: `Headline for ${url}`, link: "https://example.com/a" }]),
@@ -355,10 +374,12 @@ describe("GET /news", () => {
 
     await handler(req, res, () => {});
 
-    expect(calledUrls).toHaveLength(3);
+    expect(calledUrls).toHaveLength(5);
     expect(calledUrls.some((u) => u.includes("feeds.finance.yahoo.com") && u.includes("ZZZZ1"))).toBe(true);
     expect(calledUrls.some((u) => u.includes("news.google.com") && u.includes("ZZZZ1"))).toBe(true);
     expect(calledUrls.some((u) => u.includes("nasdaq.com") && u.includes("ZZZZ1"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("company_tickers.json"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("browse-edgar") && u.includes("CIK=0000320193"))).toBe(true);
     expect(calledUrls.some((u) => u.toLowerCase().includes("federal"))).toBe(false);
     expect(calledUrls.some((u) => u.includes("federalreserve.gov"))).toBe(false);
     expect(calledUrls.some((u) => u.includes("feeds.content.dowjones.io"))).toBe(false);
@@ -431,6 +452,11 @@ describe("GET /news", () => {
       vi.fn(async () => ({ ok: false, status: 503, text: async () => "" }))
     );
 
+    // ZZZZ3 is resolvable (see the ticker map seeded in the first test above), so the
+    // SEC EDGAR source actually attempts its filing-feed fetch and fails too, instead
+    // of short-circuiting on an unresolvable ticker to an empty, "successful" result —
+    // and it's a symbol no earlier test used, so there's no stale cached response to
+    // fall back to when every source rejects.
     const handler = getHandler("/news");
     const req = { query: { symbol: "ZZZZ3" } } as unknown as Request;
     const res = fakeRes();

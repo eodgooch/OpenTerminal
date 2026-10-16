@@ -7,27 +7,39 @@ import { mapWithConcurrency } from "../concurrency.js";
 // SEC rejects requests whose User-Agent doesn't look like "<app/company> <contact-email>" —
 // a bare product name or URL gets a flat 403, so this exact shape matters. SEC uses it to
 // reach whoever's operating a deployment if their traffic misbehaves, so self-hosters should
-// set SEC_EDGAR_CONTACT to their own email; this default is just enough to pass the check.
-const UA = `OpenTerminal ${process.env.SEC_EDGAR_CONTACT ?? "ertassellireplay@gmail.com"}`;
+// set SEC_EDGAR_CONTACT to their own email; this default is just enough to pass the check
+// without baking anyone's real contact info into source.
+export const SEC_UA = `OpenTerminal ${process.env.SEC_EDGAR_CONTACT ?? "admin@example.com"}`;
 const parser = new XMLParser({ ignoreAttributes: false });
 
 async function edgarFetch(url: string): Promise<any> {
-  const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
+  const res = await fetch(url, { headers: { "User-Agent": SEC_UA, Accept: "application/json" } });
   if (!res.ok) throw new Error(`sec edgar ${res.status} for ${url}`);
   return res.json();
 }
 
-let tickerMap: Map<string, string> | null = null;
+const TICKER_MAP_TTL = 86_400_000; // 24h — company_tickers.json is a multi-MB file, refresh rarely.
 
-/** Ticker -> zero-padded 10-digit CIK, from SEC's full company list (cached in-process). */
-async function resolveCik(symbol: string): Promise<string | null> {
-  if (!tickerMap) {
-    const data = await edgarFetch("https://www.sec.gov/files/company_tickers.json");
-    tickerMap = new Map();
-    for (const row of Object.values(data) as Array<{ ticker: string; cik_str: number }>) {
-      tickerMap.set(row.ticker.toUpperCase(), String(row.cik_str).padStart(10, "0"));
-    }
+// Kept in its own module-level slot rather than the shared, size-capped cache in
+// cache.ts: that cache evicts least-recently-used entries once ~1000 distinct keys
+// are in play (every other route's per-symbol/per-query cache key included), which
+// would otherwise force this multi-MB file to be re-fetched well before its TTL.
+let tickerMapEntry: { map: Map<string, string>; expires: number } | null = null;
+
+async function fetchTickerMap(): Promise<Map<string, string>> {
+  if (tickerMapEntry && Date.now() < tickerMapEntry.expires) return tickerMapEntry.map;
+  const data = await edgarFetch("https://www.sec.gov/files/company_tickers.json");
+  const map = new Map<string, string>();
+  for (const row of Object.values(data) as Array<{ ticker: string; cik_str: number }>) {
+    map.set(row.ticker.toUpperCase(), String(row.cik_str).padStart(10, "0"));
   }
+  tickerMapEntry = { map, expires: Date.now() + TICKER_MAP_TTL };
+  return map;
+}
+
+/** Ticker -> zero-padded 10-digit CIK, from SEC's full company list (cached, refreshed periodically). */
+export async function resolveCik(symbol: string): Promise<string | null> {
+  const tickerMap = await fetchTickerMap();
   return tickerMap.get(symbol.toUpperCase()) ?? null;
 }
 
@@ -76,7 +88,7 @@ async function parseForm4(cik: string, filing: FilingRef): Promise<InsiderTransa
   // the raw data XML sits at the accession folder root under its own filename.
   const filename = filing.primaryDocument.split("/").pop();
   const url = `https://www.sec.gov/Archives/edgar/data/${Number(cik)}/${accessionNoDashes}/${filename}`;
-  const res = await fetch(url, { headers: { "User-Agent": UA } });
+  const res = await fetch(url, { headers: { "User-Agent": SEC_UA } });
   if (!res.ok) return [];
   const xml = await res.text();
   const doc = parser.parse(xml)?.ownershipDocument;

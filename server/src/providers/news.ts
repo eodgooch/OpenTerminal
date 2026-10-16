@@ -1,4 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
+import { resolveCik, SEC_UA } from "./secedgar.js";
 
 export type NewsItem = {
   title: string;
@@ -58,6 +59,30 @@ export async function cnbcNews(): Promise<NewsItem[]> {
   return fetchRss(url, "CNBC", null);
 }
 
+// SEC's "browse-edgar" company filing feed is Atom (doc.feed.entry), not RSS
+// (doc.rss.channel.item), so it needs its own shape here instead of fetchRss.
+export async function secEdgarFilings(symbol: string): Promise<NewsItem[]> {
+  const cik = await resolveCik(symbol);
+  if (!cik) return [];
+
+  const url = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}&type=&dateb=&owner=include&count=10&output=atom`;
+  const res = await fetch(url, { headers: { "User-Agent": SEC_UA } });
+  if (!res.ok) throw new Error(`sec edgar ${res.status} for ${url}`);
+  const xml = await res.text();
+  const doc = parser.parse(xml);
+  const entries = doc?.feed?.entry ?? [];
+  const list = Array.isArray(entries) ? entries : [entries];
+  return list
+    .filter((e: any) => e?.title && e?.link?.["@_href"])
+    .map((e: any) => ({
+      title: String(e.title),
+      link: String(e.link["@_href"]),
+      publisher: "SEC EDGAR",
+      publishedAt: e.updated ? new Date(e.updated).toISOString() : null,
+      symbol,
+    }));
+}
+
 export type NewsSource =
   | { name: string; scope: "symbol"; fetch: (symbol: string) => Promise<NewsItem[]> }
   | { name: string; scope: "global"; fetch: () => Promise<NewsItem[]> };
@@ -66,6 +91,7 @@ export const NEWS_SOURCES: NewsSource[] = [
   { name: "yahoo-symbol-rss", scope: "symbol", fetch: (symbol) => symbolNews(symbol) },
   { name: "google-symbol-rss", scope: "symbol", fetch: (symbol) => topNews(`${symbol} stock`) },
   { name: "nasdaq-press-releases", scope: "symbol", fetch: (symbol) => nasdaqNews(symbol) },
+  { name: "sec-edgar-filings", scope: "symbol", fetch: (symbol) => secEdgarFilings(symbol) },
   { name: "google-market-rss", scope: "global", fetch: () => topNews("stock market") },
   { name: "google-fed-rss", scope: "global", fetch: () => topNews("federal reserve economy") },
   { name: "fed-reserve-press-releases", scope: "global", fetch: () => fedReserveNews() },
