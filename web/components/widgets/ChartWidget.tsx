@@ -16,7 +16,7 @@ import {
 import { apiGet, fmt, fmtBig, type Candle } from "../../lib/api";
 import { chartFreshnessState, type FreshnessState } from "../../lib/chartFreshness";
 import { sma, ema, vwap, rsi, macd, bollinger, type Point } from "../../lib/indicators";
-import { applyLiveTick, LIVE_TICK_RANGE, shouldApplyLiveTick } from "../../lib/liveTick";
+import { applyLiveTick, LIVE_TICK_RANGES, shouldApplyLiveTick } from "../../lib/liveTick";
 import { nyseMarketStatus } from "../../lib/marketHours";
 import { useLivePrice } from "../../lib/useLivePrice";
 import { useWidgetSymbol, type WidgetInstance } from "../../store/terminal";
@@ -53,14 +53,14 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
   const { data: candles, error } = useQuery({
     queryKey: ["history", symbol, range],
     queryFn: () => apiGet<Candle[]>(`/api/history/${encodeURIComponent(symbol)}?range=${range}`),
-    refetchInterval: range === LIVE_TICK_RANGE ? 8_000 : 60_000,
+    refetchInterval: LIVE_TICK_RANGES.has(range) ? 8_000 : 60_000,
   });
 
   // Same fast-polled quote the quote widget uses, shared via the react-query
-  // cache — only polled while on 1D, where live-ticking applies.
+  // cache — only polled while on an intraday range (1D/5D), where live-ticking applies.
   const { data: liveQuote, error: liveQuoteError, dataUpdatedAt: liveQuoteUpdatedAt } = useLivePrice(
     symbol,
-    range === LIVE_TICK_RANGE
+    LIVE_TICK_RANGES.has(range)
   );
   const livePrice = liveQuote?.price ?? null;
 
@@ -69,12 +69,12 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
   // (shown as "stale") even though nothing else about the component changed.
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
-    if (range !== LIVE_TICK_RANGE) return;
+    if (!LIVE_TICK_RANGES.has(range)) return;
     const t = setInterval(() => setNowTick(Date.now()), 1_000);
     return () => clearInterval(t);
   }, [range]);
 
-  // Freshness indicator state (1D only) — "live" during market hours with a
+  // Freshness indicator state (1D/5D only) — "live" during market hours with a
   // healthy, recently-updated quote feed; "closed" outside market hours;
   // "stale" if the feed is erroring or hasn't ticked recently, which is what
   // keeps a dead/rate-limited provider from showing a misleading "LIVE" tag.
@@ -273,7 +273,7 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
 
   // Lightweight live-tick: merges the fast-polled quote price into the last
   // candle in place via series.update(), without rebuilding the whole chart.
-  // Runs only on 1D (useLivePrice is disabled off-1D, so livePrice won't change).
+  // Runs only on 1D/5D (useLivePrice is disabled otherwise, so livePrice won't change).
   useEffect(() => {
     const series = priceSeriesRef.current;
     const baseline = lastMergedCandleRef.current;

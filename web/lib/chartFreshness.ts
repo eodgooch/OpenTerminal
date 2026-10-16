@@ -1,16 +1,16 @@
-import { LIVE_TICK_RANGE } from "./liveTick";
+import { LIVE_TICK_RANGES } from "./liveTick";
 
 export type FreshnessState = "live" | "closed" | "stale";
 
 /**
  * Decides what freshness indicator (if any) the chart should show.
  *
- * Only meaningful on the 1D range — that's the only range with a currently
- * forming intraday candle that live-ticking applies to (see liveTick.ts) —
- * so every other range returns `null` (no indicator at all).
+ * Only meaningful on the intraday ranges (1D, 5D) — those are the only
+ * ranges with a currently forming candle that live-ticking applies to (see
+ * liveTick.ts) — so every other range returns `null` (no indicator at all).
  *
  * Precedence, in order:
- *  1. Not 1D -> null (nothing to show).
+ *  1. Not an intraday range -> null (nothing to show).
  *  2. Market closed -> "closed". This takes priority even over an erroring
  *     quote feed: off-hours a quote poll failing (or just not being fresh)
  *     is expected and benign, not something to flag as "stale".
@@ -37,7 +37,7 @@ export function chartFreshnessState(params: {
   const { range, marketOpen, quoteHasError, lastQuoteUpdatedAt, historyHasError = false, now, staleAfterMs = 5_000 } =
     params;
 
-  if (range !== LIVE_TICK_RANGE) return null;
+  if (!LIVE_TICK_RANGES.has(range)) return null;
   if (!marketOpen) return "closed";
 
   if (quoteHasError) return "stale";

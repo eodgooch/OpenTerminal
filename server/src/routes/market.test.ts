@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
-import { marketRouter } from "./market.js";
+import { marketRouter, missingTodaysBar, marketLikelyOpenedToday, appendTodaysBar } from "./market.js";
 import * as cacheModule from "../cache.js";
 
 function fakeRes(): Response {
@@ -53,6 +53,110 @@ function mockHistoryFetch() {
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
+
+// Nasdaq chart data dated to a past day, plus working quote endpoints
+// (info/summary) so appendTodaysBar can patch in a "today" bar from them.
+function mockStaleNasdaqWithQuote(lastBarIso: string, price: number) {
+  const fetchMock = vi.fn().mockImplementation((url: string) => {
+    if (url.includes("api.nasdaq.com/api/autocomplete")) {
+      return Promise.resolve({ ok: true, json: async () => ({ data: [] }) });
+    }
+    if (url.includes("api.nasdaq.com/api/quote") && url.includes("/info")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          data: {
+            primaryData: { lastSalePrice: `$${price}`, netChange: "0.00", percentageChange: "0.00%", volume: "1,000" },
+            keyStats: { dayrange: { value: `${price - 1} - ${price + 1}` }, fiftyTwoWeekHighLow: { value: "1 - 2" } },
+            companyName: "Test Co",
+            exchange: "NASDAQ",
+            marketStatus: "Open",
+          },
+        }),
+      });
+    }
+    if (url.includes("api.nasdaq.com/api/quote") && url.includes("/summary")) {
+      return Promise.resolve({ ok: true, json: async () => ({ data: { summaryData: {} } }) });
+    }
+    if (url.includes("api.nasdaq.com")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          data: {
+            chart: [
+              {
+                x: new Date(lastBarIso).getTime(),
+                z: { open: "1", high: "2", low: "0.5", close: "1.5", volume: "100" },
+              },
+            ],
+          },
+        }),
+      });
+    }
+    return Promise.resolve({ ok: false, status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+describe("missingTodaysBar / marketLikelyOpenedToday", () => {
+  const candleOn = (iso: string) => [
+    { time: Math.floor(new Date(iso).getTime() / 1000), open: 1, high: 1, low: 1, close: 1, volume: 0 },
+  ];
+
+  it("is not stale before the market has opened today, even with yesterday's bar", () => {
+    const now = new Date("2026-10-16T13:00:00Z"); // 09:00 ET, Friday
+    expect(missingTodaysBar(candleOn("2026-10-15T00:00:00Z"), now)).toBe(false);
+  });
+
+  it("flags a stale last bar once the market has opened today", () => {
+    const now = new Date("2026-10-16T15:00:00Z"); // 11:00 ET, Friday
+    expect(missingTodaysBar(candleOn("2026-10-15T00:00:00Z"), now)).toBe(true);
+  });
+
+  it("is not stale once the last bar is dated today", () => {
+    const now = new Date("2026-10-16T15:00:00Z");
+    expect(missingTodaysBar(candleOn("2026-10-16T00:00:00Z"), now)).toBe(false);
+  });
+
+  it("treats an empty candle list as stale once the market has opened", () => {
+    const now = new Date("2026-10-16T15:00:00Z");
+    expect(missingTodaysBar([], now)).toBe(true);
+  });
+
+  it("never flags staleness on a weekend", () => {
+    const now = new Date("2026-10-17T15:00:00Z"); // Saturday
+    expect(marketLikelyOpenedToday(now)).toBe(false);
+    expect(missingTodaysBar(candleOn("2026-10-09T00:00:00Z"), now)).toBe(false);
+  });
+});
+
+describe("appendTodaysBar", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("patches in a synthetic today bar from Nasdaq's quote when the chart is a session stale", async () => {
+    mockStaleNasdaqWithQuote("2026-10-15T00:00:00Z", 150);
+    const now = new Date("2026-10-16T15:00:00Z"); // Friday, market open
+    const stale = [{ time: Math.floor(new Date("2026-10-15T00:00:00Z").getTime() / 1000), open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 }];
+
+    const patched = await appendTodaysBar("TODAYBAR", stale, now);
+
+    expect(patched).toHaveLength(2);
+    expect(patched[1]).toMatchObject({ close: 150 });
+    expect(patched[1].time).toBeGreaterThan(patched[0].time);
+  });
+
+  it("leaves the candles untouched when the last bar is already today's", async () => {
+    const now = new Date("2026-10-16T15:00:00Z");
+    const fresh = [{ time: Math.floor(new Date("2026-10-16T00:00:00Z").getTime() / 1000), open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 }];
+
+    const patched = await appendTodaysBar("FRESHBAR", fresh, now);
+
+    expect(patched).toBe(fresh);
+  });
+});
 
 describe("GET /history/:symbol", () => {
   afterEach(() => {

@@ -47,9 +47,13 @@ describe("shouldApplyLiveTick", () => {
     expect(shouldApplyLiveTick({ range: "1D", lastCandle: baseCandle, price: 101.5 })).toBe(true);
   });
 
-  it("is false outside the 1D range", () => {
-    expect(shouldApplyLiveTick({ range: "5D", lastCandle: baseCandle, price: 101.5 })).toBe(false);
+  it("is true for a normal 5D tick too (also intraday)", () => {
+    expect(shouldApplyLiveTick({ range: "5D", lastCandle: baseCandle, price: 101.5 })).toBe(true);
+  });
+
+  it("is false outside the intraday ranges", () => {
     expect(shouldApplyLiveTick({ range: "6M", lastCandle: baseCandle, price: 101.5 })).toBe(false);
+    expect(shouldApplyLiveTick({ range: "1M", lastCandle: baseCandle, price: 101.5 })).toBe(false);
   });
 
   it("is false without a baseline candle", () => {

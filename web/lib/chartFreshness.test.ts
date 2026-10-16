@@ -4,10 +4,10 @@ import { chartFreshnessState } from "./chartFreshness";
 const NOW = 1_700_000_000_000;
 
 describe("chartFreshnessState", () => {
-  it("returns null off the 1D range, regardless of market/quote state", () => {
+  it("returns null off the intraday ranges, regardless of market/quote state", () => {
     expect(
       chartFreshnessState({
-        range: "5D",
+        range: "1M",
         marketOpen: true,
         quoteHasError: false,
         lastQuoteUpdatedAt: NOW,
@@ -23,6 +23,18 @@ describe("chartFreshnessState", () => {
         now: NOW,
       })
     ).toBeNull();
+  });
+
+  it("is 'live' on 5D too (also an intraday range), same as 1D", () => {
+    expect(
+      chartFreshnessState({
+        range: "5D",
+        marketOpen: true,
+        quoteHasError: false,
+        lastQuoteUpdatedAt: NOW - 500,
+        now: NOW,
+      })
+    ).toBe("live");
   });
 
   it("is 'closed' when the market is closed, even if the quote is healthy", () => {

@@ -246,8 +246,81 @@ marketRouter.get("/quotes", async (req, res) => {
 // the fallback chain for those ranges the way it safely can for longer ones.
 const INTRADAY_RANGES = new Set(["1D", "5D"]);
 
+// Nasdaq's daily chart is also an *end-of-day* feed: it has no bar for today
+// until Nasdaq's own EOD process runs, even while the market is open and
+// Yahoo's equivalent "1d" bar is already updating live. Left alone, that
+// means 1M/6M/YTD/1Y/5Y/MAX sit a full session stale for the entire trading
+// day. Rather than fall through to Yahoo for the whole range (which would
+// shift meaningfully more load onto Yahoo's tighter rate limits every 20s,
+// all day, for every open chart), patch in a synthetic "today" bar built
+// from Nasdaq's own quote endpoint — same provider, already cheap and used
+// elsewhere (see getQuotes) — so Nasdaq stays primary for these ranges.
+//
+// Naive about market holidays/DST, same tradeoff web/lib/marketHours.ts
+// accepts for the client's freshness indicator.
+//
+// Dates are compared as UTC calendar days, not converted through ET: Nasdaq
+// (and vixHistory below) encode a daily bar's date as that day's UTC
+// midnight, so reading the UTC date back out is what actually round-trips —
+// converting through America/New_York first would shift it a day off since
+// ET is behind UTC (e.g. 2026-10-15T00:00:00Z, Nasdaq's own label for the
+// Oct 15 session, becomes Oct 14 once read in ET). `marketLikelyOpenedToday`
+// still needs a real ET wall-clock check, since that's what the trading
+// session is actually keyed to.
+function utcDateString(d: Date): string {
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+export function marketLikelyOpenedToday(now: Date): boolean {
+  const ny = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const day = ny.getDay();
+  const mins = ny.getHours() * 60 + ny.getMinutes();
+  return day >= 1 && day <= 5 && mins >= 570; // Mon-Fri, past 09:30 ET
+}
+
+export function missingTodaysBar(candles: yahoo.Candle[], now: Date): boolean {
+  if (!marketLikelyOpenedToday(now)) return false;
+  const last = candles[candles.length - 1];
+  return !last || utcDateString(new Date(last.time * 1000)) !== utcDateString(now);
+}
+
+export async function appendTodaysBar(
+  symbol: string,
+  candles: yahoo.Candle[],
+  now: Date = new Date()
+): Promise<yahoo.Candle[]> {
+  if (!missingTodaysBar(candles, now)) return candles;
+  try {
+    const cachedQuote = cacheGet<yahoo.Quote>(`quote:${symbol}`);
+    const q = cachedQuote ?? (await nasdaq.quote(symbol));
+    if (!cachedQuote) cacheStore(`quote:${symbol}`, q, QUOTE_TTL);
+    if (q.price === null) return candles;
+    const open = q.open ?? q.previousClose ?? q.price;
+    const time = Math.floor(new Date(`${utcDateString(now)}T00:00:00Z`).getTime() / 1000);
+    return [
+      ...candles,
+      {
+        time,
+        open,
+        high: Math.max(q.high ?? q.price, open, q.price),
+        low: Math.min(q.low ?? q.price, open, q.price),
+        close: q.price,
+        volume: q.volume ?? 0,
+      },
+    ];
+  } catch {
+    return candles; // best effort — a missing "today" bar is no worse than before
+  }
+}
+
 function historyProviders(symbol: string, rangeKey: string): Array<[string, () => Promise<yahoo.Candle[]>]> {
-  const nasdaqAttempt: [string, () => Promise<yahoo.Candle[]>] = ["nasdaq", () => nasdaq.history(symbol, rangeKey)];
+  const nasdaqAttempt: [string, () => Promise<yahoo.Candle[]>] = [
+    "nasdaq",
+    async () => {
+      const data = await nasdaq.history(symbol, rangeKey);
+      return INTRADAY_RANGES.has(rangeKey) ? data : appendTodaysBar(symbol, data);
+    },
+  ];
   const yahooAttempt: [string, () => Promise<yahoo.Candle[]>] = [
     "yahoo",
     () => yahoo.history(symbol, yahooRange(rangeKey).range, yahooRange(rangeKey).interval),
