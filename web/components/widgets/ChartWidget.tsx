@@ -14,8 +14,10 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { apiGet, fmt, fmtBig, type Candle } from "../../lib/api";
+import { chartFreshnessState, type FreshnessState } from "../../lib/chartFreshness";
 import { sma, ema, vwap, rsi, macd, bollinger, type Point } from "../../lib/indicators";
 import { applyLiveTick, shouldApplyLiveTick } from "../../lib/liveTick";
+import { nyseMarketStatus } from "../../lib/marketHours";
 import { useLivePrice } from "../../lib/useLivePrice";
 import { useWidgetSymbol, type WidgetInstance } from "../../store/terminal";
 
@@ -56,8 +58,38 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
 
   // Same fast-polled quote the quote widget uses, shared via the react-query
   // cache — only polled while on 1D, where live-ticking applies.
-  const { data: liveQuote } = useLivePrice(symbol, range === "1D");
+  const { data: liveQuote, error: liveQuoteError, dataUpdatedAt: liveQuoteUpdatedAt } = useLivePrice(
+    symbol,
+    range === "1D"
+  );
   const livePrice = liveQuote?.price ?? null;
+
+  // Ticks once a second purely to re-evaluate freshness (see below) against
+  // the current time, so a feed that silently stops updating is caught
+  // (shown as "stale") even though nothing else about the component changed.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (range !== "1D") return;
+    const t = setInterval(() => setNowTick(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, [range]);
+
+  // Freshness indicator state (1D only) — "live" during market hours with a
+  // healthy, recently-updated quote feed; "closed" outside market hours;
+  // "stale" if the feed is erroring or hasn't ticked recently, which is what
+  // keeps a dead/rate-limited provider from showing a misleading "LIVE" tag.
+  const freshness: FreshnessState | null = chartFreshnessState({
+    range,
+    marketOpen: nyseMarketStatus(new Date(nowTick)).open,
+    quoteHasError: !!liveQuoteError,
+    lastQuoteUpdatedAt: liveQuoteUpdatedAt || null,
+    now: nowTick,
+  });
+  const freshnessLabel: Record<FreshnessState, { text: string; className: string }> = {
+    live: { text: "● LIVE", className: "up" },
+    closed: { text: "● CLOSED", className: "down" },
+    stale: { text: "● STALE", className: "amber" },
+  };
 
   // Fast time -> candle lookup for the crosshair legend, independent of chart type.
   const byTime = useMemo(() => {
@@ -291,6 +323,11 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
             {ind}
           </button>
         ))}
+        {freshness && (
+          <span className={`${freshnessLabel[freshness].className} ml-auto self-center text-[11px] pr-1`}>
+            {freshnessLabel[freshness].text}
+          </span>
+        )}
       </div>
       {error && <div className="p-2 down">Error: {(error as Error).message}</div>}
       <div className="relative flex-1 min-h-0">

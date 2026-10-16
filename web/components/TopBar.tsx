@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { apiGet } from "../lib/api";
+import { nyseMarketStatus } from "../lib/marketHours";
 import { useTerminal } from "../store/terminal";
 
 type Status = {
@@ -29,14 +30,6 @@ function Clock({ tz, label }: { tz: string; label: string }) {
   );
 }
 
-function marketStateNY(): { label: string; open: boolean } {
-  const ny = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const day = ny.getDay();
-  const mins = ny.getHours() * 60 + ny.getMinutes();
-  const open = day >= 1 && day <= 5 && mins >= 570 && mins < 960; // 09:30–16:00
-  return { label: open ? "NYSE OPEN" : "NYSE CLOSED", open };
-}
-
 export default function TopBar() {
   const setCommandOpen = useTerminal((s) => s.setCommandOpen);
   const activeSymbol = useTerminal((s) => s.activeSymbol);
@@ -46,7 +39,7 @@ export default function TopBar() {
     refetchInterval: 30_000,
   });
 
-  const market = marketStateNY();
+  const market = nyseMarketStatus();
   const healthy = status?.providers.filter((p) => p.ok > 0) ?? [];
 
   return (

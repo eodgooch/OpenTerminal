@@ -18,6 +18,19 @@ export const marketRouter = Router();
 
 const QUOTE_TTL = 1_000;
 const HISTORY_TTL = 20_000;
+// Tighter cache TTL for the 1D/5D intraday ranges (see INTRADAY_RANGES below):
+// the client polls `/history` for 1D every 8s (ChartWidget), so a 20s cache
+// TTL meant ~2 of every 3 client polls were served stale cache instead of
+// reflecting genuinely fresh upstream data. Lowering it to roughly the
+// client's poll interval makes most client refetches actually get new data.
+// This is safe without touching Yahoo's own rate-limit safeguard
+// (providers/yahoo.ts's MAX_CONCURRENT=2 + MIN_SPACING_MS=150 request
+// limiter, plus its 429 cooldown) — that limiter throttles how often the
+// server is allowed to actually call Yahoo regardless of why, so a shorter
+// cache TTL just means the server is more often *eligible* to call Yahoo
+// again for a given symbol; it never bypasses the limiter or increases the
+// *rate* of Yahoo calls beyond what the limiter already permits.
+const INTRADAY_HISTORY_TTL = 5_000;
 const NEWS_TTL = 60_000;
 
 function fail(req: any, res: any, err: unknown) {
@@ -249,8 +262,9 @@ function historyProviders(symbol: string, rangeKey: string): Array<[string, () =
 marketRouter.get("/history/:symbol", async (req, res) => {
   const symbol = req.params.symbol.toUpperCase();
   const rangeKey = String(req.query.range ?? "6M");
+  const ttl = INTRADAY_RANGES.has(rangeKey) ? INTRADAY_HISTORY_TTL : HISTORY_TTL;
   try {
-    const data = await cached(`history:${symbol}:${rangeKey}`, HISTORY_TTL, () =>
+    const data = await cached(`history:${symbol}:${rangeKey}`, ttl, () =>
       binance.CRYPTO_SYMBOLS.has(symbol)
         ? binance.history(symbol, rangeKey)
         : isVix(symbol)

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
 import { marketRouter } from "./market.js";
+import * as cacheModule from "../cache.js";
 
 function fakeRes(): Response {
   return {
@@ -125,6 +126,61 @@ describe("GET /history/:symbol", () => {
     expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ close: 1.5, volume: 100 })]);
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes("query1.finance.yahoo.com"))).toBe(false);
+  });
+});
+
+describe("GET /history/:symbol cache TTL", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("uses a tighter cache TTL for an intraday range (1D) than for a non-intraday range (6M)", async () => {
+    mockHistoryFetch();
+    const cachedSpy = vi.spyOn(cacheModule, "cached");
+    const handler = getHandler("/history/:symbol");
+
+    await handler(
+      { params: { symbol: "TTLINTRADAY" }, query: { range: "1D" } } as unknown as Request,
+      fakeRes(),
+      () => {}
+    );
+    await handler(
+      { params: { symbol: "TTLDAILY" }, query: { range: "6M" } } as unknown as Request,
+      fakeRes(),
+      () => {}
+    );
+
+    const intradayTtl = cachedSpy.mock.calls.find((c) => String(c[0]).includes("TTLINTRADAY"))?.[1];
+    const dailyTtl = cachedSpy.mock.calls.find((c) => String(c[0]).includes("TTLDAILY"))?.[1];
+
+    expect(intradayTtl).toBeDefined();
+    expect(dailyTtl).toBeDefined();
+    expect(intradayTtl as number).toBeLessThan(dailyTtl as number);
+    // Daily/weekly/monthly TTL is unchanged from its pre-#9 value.
+    expect(dailyTtl).toBe(20_000);
+  });
+
+  it("applies the same tightened TTL to 5D as to 1D (both are INTRADAY_RANGES)", async () => {
+    mockHistoryFetch();
+    const cachedSpy = vi.spyOn(cacheModule, "cached");
+    const handler = getHandler("/history/:symbol");
+
+    await handler(
+      { params: { symbol: "TTL1D" }, query: { range: "1D" } } as unknown as Request,
+      fakeRes(),
+      () => {}
+    );
+    await handler(
+      { params: { symbol: "TTL5D" }, query: { range: "5D" } } as unknown as Request,
+      fakeRes(),
+      () => {}
+    );
+
+    const ttl1d = cachedSpy.mock.calls.find((c) => String(c[0]).includes("TTL1D"))?.[1];
+    const ttl5d = cachedSpy.mock.calls.find((c) => String(c[0]).includes("TTL5D"))?.[1];
+
+    expect(ttl1d).toBe(ttl5d);
   });
 });
 
