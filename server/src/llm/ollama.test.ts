@@ -93,4 +93,75 @@ describe("ollamaProvider", () => {
       ollamaProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] })
     ).rejects.toThrow(/429/);
   });
+
+  it("omits `tools` from the request when no tools are passed", async () => {
+    const fetchMock = mockFetchOnce(200, { message: { content: "ok" } });
+
+    await ollamaProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.tools).toBeUndefined();
+  });
+
+  it("translates a neutral tool def into Ollama's OpenAI-function-style wire format", async () => {
+    const fetchMock = mockFetchOnce(200, { message: { content: "ok" } });
+    const tool = {
+      name: "search_news",
+      description: "search financial news",
+      parameters: {
+        type: "object" as const,
+        properties: { symbol: { type: "string", description: "ticker" } },
+        required: [],
+      },
+    };
+
+    await ollamaProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }], tools: [tool] });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.tools).toEqual([
+      { type: "function", function: { name: "search_news", description: "search financial news", parameters: tool.parameters } },
+    ]);
+  });
+
+  it("parses message.tool_calls (object arguments) into neutral toolCalls", async () => {
+    mockFetchOnce(200, {
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "call_1", function: { name: "search_news", arguments: { symbol: "AAPL" } } }],
+      },
+    });
+
+    const result = await ollamaProvider.chat({
+      system: "sys",
+      messages: [{ role: "user", content: "AAPL news?" }],
+      tools: [
+        { name: "search_news", description: "d", parameters: { type: "object", properties: {}, required: [] } },
+      ],
+    });
+
+    expect(result.toolCalls).toEqual([{ id: "call_1", name: "search_news", arguments: { symbol: "AAPL" } }]);
+  });
+
+  it("parses message.tool_calls with stringified JSON arguments into neutral toolCalls", async () => {
+    mockFetchOnce(200, {
+      message: {
+        content: "",
+        tool_calls: [{ function: { name: "search_news", arguments: '{"symbol":"AAPL"}' } }],
+      },
+    });
+
+    const result = await ollamaProvider.chat({
+      system: "sys",
+      messages: [{ role: "user", content: "AAPL news?" }],
+    });
+
+    expect(result.toolCalls).toEqual([{ id: "search_news-0", name: "search_news", arguments: { symbol: "AAPL" } }]);
+  });
+
+  it("leaves toolCalls undefined when the response has no tool_calls", async () => {
+    mockFetchOnce(200, { message: { content: "ok" } });
+    const result = await ollamaProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] });
+    expect(result.toolCalls).toBeUndefined();
+  });
 });
