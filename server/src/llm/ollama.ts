@@ -1,4 +1,4 @@
-import type { LlmChatRequest, LlmChatResponse, LlmProvider } from "./types.js";
+import type { LlmChatRequest, LlmChatResponse, LlmProvider, ToolDef } from "./types.js";
 import { withContext } from "./types.js";
 
 const DEFAULT_MODEL = "gpt-oss:120b";
@@ -10,6 +10,27 @@ class OllamaHttpError extends Error {
     super(message);
     this.name = "OllamaHttpError";
   }
+}
+
+/** Neutral tool def -> Ollama's native `/api/chat` tool format (OpenAI-function-style). */
+function toOllamaTool(tool: ToolDef) {
+  return { type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } };
+}
+
+// Ollama's native API returns `message.tool_calls[].function.arguments` — observed live
+// against Ollama Cloud as an already-parsed object, but handled defensively as a JSON
+// string too since OpenAI-function-style APIs commonly encode it that way.
+function parseToolCallArguments(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
 // Hits Ollama's native /api/chat endpoint rather than its Anthropic-compatible
@@ -27,7 +48,7 @@ export const ollamaProvider: LlmProvider = {
     return "set OLLAMA_API_KEY on the server.";
   },
 
-  async chat({ system, messages, context }: LlmChatRequest): Promise<LlmChatResponse> {
+  async chat({ system, messages, context, tools }: LlmChatRequest): Promise<LlmChatResponse> {
     const baseUrl = process.env.OLLAMA_BASE_URL || DEFAULT_BASE_URL;
     const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/chat`, {
       method: "POST",
@@ -39,6 +60,7 @@ export const ollamaProvider: LlmProvider = {
         model: process.env.LLM_MODEL || DEFAULT_MODEL,
         messages: [{ role: "system", content: system }, ...withContext(messages, context)],
         stream: false,
+        ...(tools && tools.length > 0 ? { tools: tools.map(toOllamaTool) } : {}),
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -47,7 +69,16 @@ export const ollamaProvider: LlmProvider = {
       throw new OllamaHttpError(res.status, `ollama-cloud ${res.status}${detail ? `: ${detail}` : ""}`);
     }
     const data = await res.json();
-    return { text: data?.message?.content ?? "", refused: false };
+    const rawToolCalls = data?.message?.tool_calls;
+    const toolCalls =
+      Array.isArray(rawToolCalls) && rawToolCalls.length > 0
+        ? rawToolCalls.map((c: any, i: number) => ({
+            id: String(c.id ?? `${c.function?.name ?? "tool"}-${i}`),
+            name: c.function?.name ?? "",
+            arguments: parseToolCallArguments(c.function?.arguments),
+          }))
+        : undefined;
+    return { text: data?.message?.content ?? "", refused: false, toolCalls };
   },
 
   isAuthError(err: unknown): boolean {

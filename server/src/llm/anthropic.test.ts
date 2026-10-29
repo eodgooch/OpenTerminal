@@ -98,4 +98,62 @@ describe("anthropicProvider", () => {
     expect(result.refused).toBe(true);
     expect(result.text).toMatch(/declined/i);
   });
+
+  it("omits `tools` from the request when no tools are passed", async () => {
+    const fetchMock = mockFetchOnce(200, { stop_reason: "end_turn", content: [{ type: "text", text: "ok" }] });
+
+    await anthropicProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.tools).toBeUndefined();
+  });
+
+  it("translates a neutral tool def into Anthropic's `input_schema` wire format", async () => {
+    const fetchMock = mockFetchOnce(200, { stop_reason: "end_turn", content: [{ type: "text", text: "ok" }] });
+    const tool = {
+      name: "search_news",
+      description: "search financial news",
+      parameters: {
+        type: "object" as const,
+        properties: { symbol: { type: "string", description: "ticker" } },
+        required: [],
+      },
+    };
+
+    await anthropicProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }], tools: [tool] });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.tools).toEqual([
+      { name: "search_news", description: "search financial news", input_schema: tool.parameters },
+    ]);
+  });
+
+  it("parses `tool_use` content blocks into neutral toolCalls on stop_reason 'tool_use'", async () => {
+    mockFetchOnce(200, {
+      stop_reason: "tool_use",
+      content: [
+        { type: "text", text: "Let me check." },
+        { type: "tool_use", id: "call_1", name: "search_news", input: { symbol: "AAPL" } },
+      ],
+    });
+
+    const result = await anthropicProvider.chat({
+      system: "sys",
+      messages: [{ role: "user", content: "AAPL news?" }],
+      tools: [
+        { name: "search_news", description: "d", parameters: { type: "object", properties: {}, required: [] } },
+      ],
+    });
+
+    expect(result.text).toBe("Let me check.");
+    expect(result.toolCalls).toEqual([{ id: "call_1", name: "search_news", arguments: { symbol: "AAPL" } }]);
+  });
+
+  it("leaves toolCalls undefined when the response has no tool_use blocks", async () => {
+    mockFetchOnce(200, { stop_reason: "end_turn", content: [{ type: "text", text: "ok" }] });
+
+    const result = await anthropicProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] });
+
+    expect(result.toolCalls).toBeUndefined();
+  });
 });

@@ -4,17 +4,49 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * A JSON-schema-shaped parameter list for a tool, loose enough to translate
+ * into either Anthropic's `input_schema` or Ollama's OpenAI-function-style
+ * `parameters` without losing information.
+ */
+export interface ToolParameterSchema {
+  type: "object";
+  properties: Record<string, { type: string; description?: string; enum?: string[] }>;
+  required?: string[];
+  // Index signature so this satisfies Anthropic SDK's `input_schema` type (itself a loose
+  // JSON-schema object type) without a lossy cast at the call site.
+  [key: string]: unknown;
+}
+
+/** A neutral tool definition, translated per-provider into its own wire format. */
+export interface ToolDef {
+  name: string;
+  description: string;
+  parameters: ToolParameterSchema;
+}
+
+/** A model-requested invocation of one tool, translated back from the provider's own shape. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
 /** Neutral chat request shared by every LLM Provider. */
 export interface LlmChatRequest {
   system: string;
   messages: ChatMessage[];
   context?: unknown;
+  /** Tools the model may call this turn. Omitted/empty means no tool-calling is offered. */
+  tools?: ToolDef[];
 }
 
 /** Neutral chat response shared by every LLM Provider. */
 export interface LlmChatResponse {
   text: string;
   refused: boolean;
+  /** Present (and non-empty) when the model asked to invoke one or more tools instead of answering directly. */
+  toolCalls?: ToolCall[];
 }
 
 /**

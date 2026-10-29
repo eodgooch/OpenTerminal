@@ -25,6 +25,40 @@ function fakeFetch(status: number, body: unknown) {
   });
 }
 
+function rssXml(items: Array<{ title: string; link: string }>): string {
+  const itemsXml = items.map((i) => `<item><title>${i.title}</title><link>${i.link}</link></item>`).join("");
+  return `<?xml version="1.0"?><rss><channel>${itemsXml}</channel></rss>`;
+}
+
+// Routes every outbound fetch: calls to the active LLM Provider's own endpoint are served
+// in order from `providerResponses` (one JSON body per round-trip); every other URL (the
+// news tool's RSS/JSON sources) gets a generic successful empty-ish response, so the tool
+// executes for real against the news-search plumbing without depending on live network.
+function mockAgenticFetch(providerResponses: unknown[]) {
+  let call = 0;
+  return vi.fn().mockImplementation((url: string) => {
+    const isProviderCall = String(url).includes("api.anthropic.com") || String(url).includes("/api/chat");
+    if (isProviderCall) {
+      const body = providerResponses[Math.min(call, providerResponses.length - 1)];
+      call++;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/xml" }),
+      json: async () => ({}),
+      text: async () => rssXml([{ title: "Example headline", link: "https://example.com/a" }]),
+    });
+  });
+}
+
 describe("POST /api/ai/chat", () => {
   const ORIGINAL_ENV = { ...process.env };
 
@@ -167,5 +201,105 @@ describe("POST /api/ai/chat", () => {
 
     expect(res.status).toHaveBeenCalledWith(502);
     expect((res.json as any).mock.calls[0][0].error).toMatch(/unauthorized for this region/);
+  });
+
+  describe("agentic tool-calling loop", () => {
+    it("executes the news tool and folds results back into a second provider call, returning a trace", async () => {
+      process.env.ANTHROPIC_API_KEY = "test-key";
+      const fetchMock = mockAgenticFetch([
+        {
+          stop_reason: "tool_use",
+          content: [
+            { type: "text", text: "Let me check." },
+            { type: "tool_use", id: "call_1", name: "search_news", input: { symbol: "AAPL" } },
+          ],
+        },
+        { stop_reason: "end_turn", content: [{ type: "text", text: "AAPL news looks stable." }] },
+      ]);
+      vi.stubGlobal("fetch", fetchMock);
+      const handler = getHandler("/chat");
+      const req = { body: { messages: [{ role: "user", content: "What's the latest on AAPL?" }] } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => {});
+
+      expect(res.json).toHaveBeenCalledWith({
+        text: "AAPL news looks stable.",
+        toolCalls: [{ name: "search_news", arguments: { symbol: "AAPL" } }],
+      });
+
+      // Exactly two calls hit the provider endpoint (the tool round + the follow-up); the
+      // second call's body carries the folded-back tool results ahead of the original question.
+      const providerCalls = fetchMock.mock.calls.filter((c: any) => String(c[0]).includes("api.anthropic.com"));
+      expect(providerCalls).toHaveLength(2);
+      const secondBody = JSON.parse(providerCalls[1][1].body);
+      expect(secondBody.messages.at(-1).content).toContain("Tool results");
+      expect(secondBody.messages.at(-1).content).toContain("Example headline");
+    });
+
+    it("stops after N tool-call rounds, forcing a final tools-less call at the cap", async () => {
+      process.env.ANTHROPIC_API_KEY = "test-key";
+      const toolUseResponse = {
+        stop_reason: "tool_use",
+        content: [{ type: "tool_use", id: "call_1", name: "search_news", input: {} }],
+      };
+      const fetchMock = mockAgenticFetch([toolUseResponse]); // always returns the same tool_use body
+      vi.stubGlobal("fetch", fetchMock);
+      const handler = getHandler("/chat");
+      const req = { body: { messages: [{ role: "user", content: "keep digging" }] } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => {});
+
+      const providerCalls = fetchMock.mock.calls.filter((c: any) => String(c[0]).includes("api.anthropic.com"));
+      // 1 initial call + 5 capped rounds = 6 total provider calls.
+      expect(providerCalls).toHaveLength(6);
+      const lastBody = JSON.parse(providerCalls.at(-1)[1].body);
+      expect(lastBody.tools).toBeUndefined(); // the round at the cap forces an answer without offering tools
+
+      const jsonArg = (res.json as any).mock.calls[0][0];
+      expect(jsonArg.toolCalls).toHaveLength(5);
+    });
+
+    it("omits toolCalls from the response when the model never calls a tool", async () => {
+      process.env.ANTHROPIC_API_KEY = "test-key";
+      vi.stubGlobal(
+        "fetch",
+        mockAgenticFetch([{ stop_reason: "end_turn", content: [{ type: "text", text: "hi there" }] }])
+      );
+      const handler = getHandler("/chat");
+      const req = { body: { messages: [{ role: "user", content: "hi" }] } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => {});
+
+      expect(res.json).toHaveBeenCalledWith({ text: "hi there" });
+    });
+
+    it("round-trips tool-calling through the ollama-cloud provider too, not just anthropic", async () => {
+      process.env.LLM_PROVIDER = "ollama-cloud";
+      process.env.OLLAMA_API_KEY = "test-key";
+      const fetchMock = mockAgenticFetch([
+        {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [{ id: "call_1", function: { name: "search_news", arguments: { symbol: "TSLA" } } }],
+          },
+        },
+        { message: { role: "assistant", content: "TSLA news looks stable." } },
+      ]);
+      vi.stubGlobal("fetch", fetchMock);
+      const handler = getHandler("/chat");
+      const req = { body: { messages: [{ role: "user", content: "What's the latest on TSLA?" }] } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => {});
+
+      expect(res.json).toHaveBeenCalledWith({
+        text: "TSLA news looks stable.",
+        toolCalls: [{ name: "search_news", arguments: { symbol: "TSLA" } }],
+      });
+    });
   });
 });
