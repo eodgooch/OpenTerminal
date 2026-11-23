@@ -1,8 +1,39 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MissingVisionModelError, resolveChatModel } from "./index.js";
+import { activeProvider, LlmConfigError, MissingVisionModelError, resolveChatModel } from "./index.js";
 import { anthropicProvider } from "./anthropic.js";
-import { ollamaProvider } from "./ollama.js";
+import { ollamaProvider, ollamaSelfHostedProvider } from "./ollama.js";
 import type { ChatMessage } from "./types.js";
+
+describe("activeProvider", () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("defaults to anthropic when LLM_PROVIDER is unset", () => {
+    delete process.env.LLM_PROVIDER;
+    expect(activeProvider()).toBe(anthropicProvider);
+  });
+
+  it('resolves LLM_PROVIDER="ollama-cloud" to the hosted ollamaProvider', () => {
+    process.env.LLM_PROVIDER = "ollama-cloud";
+    expect(activeProvider()).toBe(ollamaProvider);
+  });
+
+  it('resolves LLM_PROVIDER="ollama" to the self-hosted ollamaSelfHostedProvider', () => {
+    process.env.LLM_PROVIDER = "ollama";
+    expect(activeProvider()).toBe(ollamaSelfHostedProvider);
+  });
+
+  it("throws LlmConfigError naming all three valid providers for an unrecognized key", () => {
+    process.env.LLM_PROVIDER = "bogus";
+    expect(() => activeProvider()).toThrow(LlmConfigError);
+    expect(() => activeProvider()).toThrow(/"anthropic"/);
+    expect(() => activeProvider()).toThrow(/"ollama-cloud"/);
+    expect(() => activeProvider()).toThrow(/"ollama"/);
+  });
+});
 
 describe("resolveChatModel", () => {
   const ORIGINAL_ENV = { ...process.env };

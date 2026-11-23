@@ -132,7 +132,7 @@ That's it — no `.env` file required to get a fully working terminal.
 
 ### Optional: AI assistant
 
-The AI chat assistant is powered by a pluggable **LLM Provider** — Anthropic Claude (the default) or Ollama Cloud. Pick one via `LLM_PROVIDER`; the chat UI and behavior are identical either way.
+The AI chat assistant is powered by a pluggable **LLM Provider** — Anthropic Claude (the default), Ollama Cloud, or a self-hosted Ollama server. Pick one via `LLM_PROVIDER`; the chat UI and behavior are identical either way.
 
 ```bash
 # Anthropic (default — LLM_PROVIDER can be left unset)
@@ -147,13 +147,21 @@ export OLLAMA_API_KEY=...
 npm run dev
 ```
 
+```bash
+# Self-hosted Ollama (e.g. `ollama serve` on your own machine/network) — no API key,
+# no Authorization header ever sent; OLLAMA_BASE_URL is required and used as-is.
+export LLM_PROVIDER=ollama
+export OLLAMA_BASE_URL=http://localhost:11434
+npm run dev
+```
+
 | Env var | Applies to | Default |
 |---|---|---|
 | `LLM_PROVIDER` | both | `anthropic` |
 | `ANTHROPIC_API_KEY` | `anthropic` | — |
 | `OLLAMA_API_KEY` | `ollama-cloud` | — |
-| `OLLAMA_BASE_URL` | `ollama-cloud` | `https://ollama.com` |
-| `LLM_MODEL` | whichever provider is active | `claude-opus-4-8` (Anthropic) / `gpt-oss:120b` (Ollama Cloud) |
+| `OLLAMA_BASE_URL` | `ollama-cloud`, `ollama` | `https://ollama.com` for `ollama-cloud`; **required** (no default) for `ollama` |
+| `LLM_MODEL` | whichever provider is active | `claude-opus-4-8` (Anthropic) / `gpt-oss:120b` (Ollama Cloud/self-hosted) |
 | `OLLAMA_VISION_MODEL` | `ollama-cloud`, only when a chat turn has an image attached | — |
 
 Without credentials for the active provider, everything else still works — the AI widget just shows a friendly "unavailable" message instead of failing.

@@ -1,17 +1,15 @@
 import { anthropicProvider } from "./anthropic.js";
-import { ollamaProvider } from "./ollama.js";
+import { ollamaProvider, ollamaSelfHostedProvider } from "./ollama.js";
 import type { ChatMessage, LlmProvider } from "./types.js";
-import { messageHasImage } from "./types.js";
+import { LlmConfigError, messageHasImage } from "./types.js";
 
 export * from "./types.js";
 
 const PROVIDERS: Record<string, LlmProvider> = {
   anthropic: anthropicProvider,
   "ollama-cloud": ollamaProvider,
+  ollama: ollamaSelfHostedProvider,
 };
-
-/** An unrecognized LLM_PROVIDER value — same error class as missing credentials (503). */
-export class LlmConfigError extends Error {}
 
 /** Resolves LLM_PROVIDER (default "anthropic") to its provider, or throws LlmConfigError. */
 export function activeProvider(): LlmProvider {
@@ -19,7 +17,7 @@ export function activeProvider(): LlmProvider {
   const provider = PROVIDERS[key];
   if (!provider) {
     throw new LlmConfigError(
-      `Unrecognized LLM_PROVIDER "${key}". Expected "anthropic" or "ollama-cloud".`
+      `Unrecognized LLM_PROVIDER "${key}". Expected "anthropic", "ollama-cloud", or "ollama".`
     );
   }
   return provider;
