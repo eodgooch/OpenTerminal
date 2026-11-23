@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { activeProvider, LlmConfigError, MissingVisionModelError, resolveChatModel } from "./index.js";
+import { activeProvider, LlmConfigError, resolveChatModel } from "./index.js";
 import { anthropicProvider } from "./anthropic.js";
 import { ollamaProvider, ollamaSelfHostedProvider } from "./ollama.js";
 import type { ChatMessage } from "./types.js";
@@ -40,6 +40,7 @@ describe("resolveChatModel", () => {
 
   beforeEach(() => {
     delete process.env.OLLAMA_VISION_MODEL;
+    delete process.env.LLM_MODEL;
   });
 
   afterEach(() => {
@@ -65,12 +66,27 @@ describe("resolveChatModel", () => {
     expect(resolveChatModel(ollamaProvider, withImage)).toBe("llama3.2-vision");
   });
 
-  it("throws MissingVisionModelError for an image-bearing turn under ollama-cloud when OLLAMA_VISION_MODEL is unset", () => {
-    expect(() => resolveChatModel(ollamaProvider, withImage)).toThrow(MissingVisionModelError);
-    expect(() => resolveChatModel(ollamaProvider, withImage)).toThrow(/OLLAMA_VISION_MODEL/);
+  it("falls back to LLM_MODEL for an image-bearing turn under ollama-cloud when OLLAMA_VISION_MODEL is unset", () => {
+    process.env.LLM_MODEL = "qwen2.5vl";
+    expect(resolveChatModel(ollamaProvider, withImage)).toBe("qwen2.5vl");
+  });
+
+  it("prefers OLLAMA_VISION_MODEL over LLM_MODEL when both are set for an image-bearing turn", () => {
+    process.env.OLLAMA_VISION_MODEL = "llama3.2-vision";
+    process.env.LLM_MODEL = "qwen2.5vl";
+    expect(resolveChatModel(ollamaProvider, withImage)).toBe("llama3.2-vision");
+  });
+
+  it("returns undefined for an image-bearing turn when neither OLLAMA_VISION_MODEL nor LLM_MODEL is set", () => {
+    expect(resolveChatModel(ollamaProvider, withImage)).toBeUndefined();
   });
 
   it("does not require OLLAMA_VISION_MODEL for an ollama-cloud turn with no image", () => {
     expect(() => resolveChatModel(ollamaProvider, textOnly)).not.toThrow();
+  });
+
+  it("applies the same LLM_MODEL fallback to the self-hosted ollama provider too, not just ollama-cloud by name", () => {
+    process.env.LLM_MODEL = "qwen2.5vl";
+    expect(resolveChatModel(ollamaSelfHostedProvider, withImage)).toBe("qwen2.5vl");
   });
 });

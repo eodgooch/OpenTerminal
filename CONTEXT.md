@@ -25,7 +25,7 @@ The single LLM Provider currently selected via the `LLM_PROVIDER` env var. Exact
 _Avoid_: "Default provider" (ambiguous with the unset-env-var fallback to `anthropic`).
 
 **Vision Model**:
-The model an image-bearing chat turn is routed to under the `ollama-cloud` Active Provider, named by the separate `OLLAMA_VISION_MODEL` env var rather than the regular `LLM_MODEL`. Exactly one LLM Provider is ever active (see Active Provider); this is a second model used within that same active provider's own request, not a second provider or a runtime switch.
+The model an image-bearing chat turn is routed to under the `ollama-cloud` Active Provider, named by the separate `OLLAMA_VISION_MODEL` env var when set, falling back to the regular `LLM_MODEL` when it's unset (rather than erroring — many Ollama models already handle both text and vision). Exactly one LLM Provider is ever active (see Active Provider); this is a second model used within that same active provider's own request, not a second provider or a runtime switch.
 _Avoid_: "Vision Provider" — it isn't a second Active Provider, and the `anthropic` provider has no equivalent knob, since its models already handle images within the one model used for text.
 
 **Tool Call**:
@@ -41,7 +41,7 @@ A distilled, AI-authored note that the assistant saves on its own to recall in l
 An append-only record of one unit of AI activity — a full chat transcript, a Tool Call, a Pending Action lifecycle event, or a Memory Entry write — plus call metadata and failures. Audit Log Entries have no update or delete path, including for the user, and are retained forever.
 
 **Vision Model**:
-The vision-capable model named by `OLLAMA_VISION_MODEL`, used only under `LLM_PROVIDER=ollama-cloud` for a chat turn whose content includes an image part, in place of that provider's regular `LLM_MODEL` (which may be text-only). Not a second Active Provider — this is a per-turn model choice, decided solely by whether the turn carries an image; Anthropic's Claude models see images natively under the regular `LLM_MODEL` and never need this.
+The model named by `OLLAMA_VISION_MODEL`, used only under `LLM_PROVIDER=ollama-cloud` for a chat turn whose content includes an image part, in place of that provider's regular `LLM_MODEL`. When `OLLAMA_VISION_MODEL` is unset, the turn falls back to the regular `LLM_MODEL` instead of erroring. Not a second Active Provider — this is a per-turn model choice, decided solely by whether the turn carries an image; Anthropic's Claude models see images natively under the regular `LLM_MODEL` and never need this.
 
 **Stored Image**:
 An image attached to a chat turn, saved once to disk under `DATA_DIR/images` and referenced from then on by its content-addressed id (never re-embedded or re-sent as raw bytes). Chat history and the Audit Log's `chat`/`tool_call` entries reference a Stored Image by that id; raw image bytes are never written to the Audit Log. Only the most recent image-bearing turn (capped, like the recent-transactions snapshot auto-injected as chat context) is ever resent to an LLM Provider — an older turn's Stored Image is represented to the model as a text placeholder naming its id instead.
