@@ -5,8 +5,39 @@ import type { Quote, Candle } from "./yahoo.js";
 // timeout). Overridable so tests can assert fast failure without real waits.
 const FETCH_TIMEOUT_MS = Number(process.env.PROVIDER_FETCH_TIMEOUT_MS) || 9000;
 
-const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
-const HEADERS = { "User-Agent": UA, Accept: "application/json", Origin: "https://www.nasdaq.com", Referer: "https://www.nasdaq.com/" };
+// A single hardcoded User-Agent makes every self-hosted install share one
+// fingerprint: once Nasdaq's anti-bot system flags that one UA string, the
+// whole fleet of self-hosted installs gets degraded together (observed:
+// sustained HTTP 403 from Nasdaq for the previous fixed UA). So pick one UA
+// per server process from a small pool of plausible, current, OS/browser-
+// diverse strings, staying on it until it draws a 403, at which point we
+// rotate to the next untried pool entry — see rotateUserAgent() below — and
+// let operators pin their own explicitly.
+const UA_POOL = [
+  "Mozilla/5.0 (X11; Linux x86_64; rv:141.0) Gecko/20100101 Firefox/141.0",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0",
+];
+
+const pinnedUA = process.env.NASDAQ_USER_AGENT?.trim() || null;
+// Shuffled once per process: the order we try pool entries in if the current
+// one turns out to be blocked. Pinned installs never rotate.
+const uaOrder = pinnedUA ? [pinnedUA] : [...UA_POOL].sort(() => Math.random() - 0.5);
+let uaOrderIndex = 0;
+let UA = uaOrder[0];
+
+// A UA can be blocked from the start (e.g. shared/sandboxed egress IPs that
+// already tripped Nasdaq's throttle for that exact string) rather than only
+// becoming blocked over time, so a 403 can't be assumed to mean real
+// blocking until every pool entry has been tried.
+function rotateUserAgent(): boolean {
+  if (uaOrderIndex >= uaOrder.length - 1) return false;
+  uaOrderIndex++;
+  UA = uaOrder[uaOrderIndex];
+  return true;
+}
 
 // Polite concurrency limiter — Nasdaq's public API has no documented limit,
 // but we stay gentle to avoid tripping bot-detection under bursty load.
@@ -24,15 +55,39 @@ function release(): void {
 }
 
 async function nfetch(url: string): Promise<any> {
-  await acquire();
-  try {
-    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`nasdaq ${res.status} for ${url}`);
-    const json = await res.json();
-    if (!json?.data) throw new Error(`nasdaq: no data in response for ${url}`);
-    return json.data;
-  } finally {
-    release();
+  // Bounded by the UA pool size: each pass either returns, throws, or rotates
+  // to a not-yet-tried UA and loops, so this can run at most uaOrder.length times.
+  for (;;) {
+    // Captured before the request so a concurrent rotation (several in-flight
+    // requests can 403 off the same blocked UA at once, since MAX_CONCURRENT
+    // allows multiple requests in flight, including the two quote() fires per
+    // symbol) can be told apart from a fresh block below.
+    const usedUA = UA;
+    const headers: Record<string, string> = {
+      "User-Agent": usedUA,
+      Accept: "application/json",
+      Origin: "https://www.nasdaq.com",
+      Referer: "https://www.nasdaq.com/",
+    };
+    await acquire();
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      if (!res.ok) {
+        if (res.status === 403) {
+          // If another concurrent request already rotated past the UA this
+          // request used, don't rotate again for the same block event —
+          // just retry with whatever UA is now current. Only rotate when
+          // this request is the first to see that `usedUA` is blocked.
+          if (UA !== usedUA || rotateUserAgent()) continue;
+        }
+        throw new Error(`nasdaq ${res.status} for ${url}`);
+      }
+      const json = await res.json();
+      if (!json?.data) throw new Error(`nasdaq: no data in response for ${url}`);
+      return json.data;
+    } finally {
+      release();
+    }
   }
 }
 
