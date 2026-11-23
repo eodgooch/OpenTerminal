@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { activeProvider, LlmConfigError, MissingVisionModelError, resolveChatModel } from "../llm/index.js";
+import { activeProvider, LlmConfigError, resolveChatModel } from "../llm/index.js";
 import type { ChatMessage, ToolCall } from "../llm/types.js";
 import { textOf, validateChatMessages } from "../llm/types.js";
 import { toAuditMessages } from "../llm/auditImages.js";
@@ -145,23 +145,10 @@ aiRouter.post("/chat", async (req, res) => {
     return res.status(503).json({ error: `AI assistant unavailable: ${detail}` });
   }
 
-  // An image-bearing turn under ollama-cloud routes to OLLAMA_VISION_MODEL instead of the
-  // regular LLM_MODEL (which may be text-only) -- see resolveChatModel. This check runs
-  // before the agentic loop (same 503-not-silent-failure contract as the two checks above)
-  // so a missing vision model never surfaces as a garbled reply from a text-only model.
-  let modelOverride: string | undefined;
-  try {
-    modelOverride = resolveChatModel(provider, messages);
-  } catch (err) {
-    if (!(err instanceof MissingVisionModelError)) throw err;
-    writeAuditLog({
-      eventType: "error",
-      summary: `chat unavailable: ${err.message}`,
-      detail: { error: err.message, stage: "chat" },
-      model: provider.name,
-    });
-    return res.status(503).json({ error: `AI assistant unavailable: ${err.message}` });
-  }
+  // An image-bearing turn under a non-anthropic (Ollama-family) provider routes to
+  // OLLAMA_VISION_MODEL if set, falling back to the regular LLM_MODEL otherwise --
+  // see resolveChatModel.
+  const modelOverride = resolveChatModel(provider, messages);
 
   try {
     // Persists every image part in the incoming history to disk under DATA_DIR/images
