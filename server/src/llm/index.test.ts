@@ -1,8 +1,39 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveChatModel } from "./index.js";
+import { activeProvider, LlmConfigError, resolveChatModel } from "./index.js";
 import { anthropicProvider } from "./anthropic.js";
-import { ollamaProvider } from "./ollama.js";
-import type { ChatMessage, LlmProvider } from "./types.js";
+import { ollamaProvider, ollamaSelfHostedProvider } from "./ollama.js";
+import type { ChatMessage } from "./types.js";
+
+describe("activeProvider", () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("defaults to anthropic when LLM_PROVIDER is unset", () => {
+    delete process.env.LLM_PROVIDER;
+    expect(activeProvider()).toBe(anthropicProvider);
+  });
+
+  it('resolves LLM_PROVIDER="ollama-cloud" to the hosted ollamaProvider', () => {
+    process.env.LLM_PROVIDER = "ollama-cloud";
+    expect(activeProvider()).toBe(ollamaProvider);
+  });
+
+  it('resolves LLM_PROVIDER="ollama" to the self-hosted ollamaSelfHostedProvider', () => {
+    process.env.LLM_PROVIDER = "ollama";
+    expect(activeProvider()).toBe(ollamaSelfHostedProvider);
+  });
+
+  it("throws LlmConfigError naming all three valid providers for an unrecognized key", () => {
+    process.env.LLM_PROVIDER = "bogus";
+    expect(() => activeProvider()).toThrow(LlmConfigError);
+    expect(() => activeProvider()).toThrow(/"anthropic"/);
+    expect(() => activeProvider()).toThrow(/"ollama-cloud"/);
+    expect(() => activeProvider()).toThrow(/"ollama"/);
+  });
+});
 
 describe("resolveChatModel", () => {
   const ORIGINAL_ENV = { ...process.env };
@@ -20,11 +51,6 @@ describe("resolveChatModel", () => {
   const withImage: ChatMessage[] = [
     { role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image", mimeType: "image/png", data: "aGVsbG8=" }] },
   ];
-
-  // Stands in for #77's self-hosted "ollama" provider (not yet merged on this branch):
-  // resolveChatModel must key off "not anthropic", not the literal string "ollama-cloud",
-  // so any future Ollama-family provider is covered automatically.
-  const fakeSelfHostedOllama: LlmProvider = { ...ollamaProvider, name: "ollama" };
 
   it("returns undefined for a text-only turn regardless of provider", () => {
     expect(resolveChatModel(anthropicProvider, textOnly)).toBeUndefined();
@@ -59,8 +85,8 @@ describe("resolveChatModel", () => {
     expect(() => resolveChatModel(ollamaProvider, textOnly)).not.toThrow();
   });
 
-  it("applies the same LLM_MODEL fallback to any non-anthropic provider, not just ollama-cloud by name", () => {
+  it("applies the same LLM_MODEL fallback to the self-hosted ollama provider too, not just ollama-cloud by name", () => {
     process.env.LLM_MODEL = "qwen2.5vl";
-    expect(resolveChatModel(fakeSelfHostedOllama, withImage)).toBe("qwen2.5vl");
+    expect(resolveChatModel(ollamaSelfHostedProvider, withImage)).toBe("qwen2.5vl");
   });
 });

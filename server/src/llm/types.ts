@@ -205,6 +205,12 @@ export interface LlmProvider {
   isAuthError(err: unknown): boolean;
 }
 
+/** An unrecognized LLM_PROVIDER value, or another provider-level config problem (e.g. a
+ * required env var missing for the active provider) — same error class as missing
+ * credentials (503). Lives here (rather than index.ts, where it originated) so a provider
+ * module (e.g. ollama.ts) can throw it without an import cycle back into index.ts. */
+export class LlmConfigError extends Error {}
+
 /** Folds optional terminal context into the message list, ahead of the user's own messages. */
 export function withContext(messages: ChatMessage[], context: unknown): ChatMessage[] {
   if (!context) return messages;

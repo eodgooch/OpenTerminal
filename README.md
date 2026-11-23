@@ -132,7 +132,7 @@ That's it — no `.env` file required to get a fully working terminal.
 
 ### Optional: AI assistant
 
-The AI chat assistant is powered by a pluggable **LLM Provider** — Anthropic Claude (the default) or Ollama Cloud. Pick one via `LLM_PROVIDER`; the chat UI and behavior are identical either way.
+The AI chat assistant is powered by a pluggable **LLM Provider** — Anthropic Claude (the default), Ollama Cloud, or a self-hosted Ollama server. Pick one via `LLM_PROVIDER`; the chat UI and behavior are identical either way.
 
 ```bash
 # Anthropic (default — LLM_PROVIDER can be left unset)
@@ -147,18 +147,26 @@ export OLLAMA_API_KEY=...
 npm run dev
 ```
 
+```bash
+# Self-hosted Ollama (e.g. `ollama serve` on your own machine/network) — no API key,
+# no Authorization header ever sent; OLLAMA_BASE_URL is required and used as-is.
+export LLM_PROVIDER=ollama
+export OLLAMA_BASE_URL=http://localhost:11434
+npm run dev
+```
+
 | Env var | Applies to | Default |
 |---|---|---|
 | `LLM_PROVIDER` | both | `anthropic` |
 | `ANTHROPIC_API_KEY` | `anthropic` | — |
 | `OLLAMA_API_KEY` | `ollama-cloud` | — |
-| `OLLAMA_BASE_URL` | `ollama-cloud` | `https://ollama.com` |
-| `LLM_MODEL` | whichever provider is active | `claude-opus-4-8` (Anthropic) / `gpt-oss:120b` (Ollama Cloud) |
-| `OLLAMA_VISION_MODEL` | `ollama-cloud`, only when a chat turn has an image attached | falls back to `LLM_MODEL` |
+| `OLLAMA_BASE_URL` | `ollama-cloud`, `ollama` | `https://ollama.com` for `ollama-cloud`; **required** (no default) for `ollama` |
+| `LLM_MODEL` | whichever provider is active | `claude-opus-4-8` (Anthropic) / `gpt-oss:120b` (Ollama Cloud/self-hosted) |
+| `OLLAMA_VISION_MODEL` | `ollama-cloud`, `ollama`, only when a chat turn has an image attached | falls back to `LLM_MODEL` |
 
 Without credentials for the active provider, everything else still works — the AI widget just shows a friendly "unavailable" message instead of failing.
 
-You can paste or drag a screenshot into the AI Assistant's chat input and ask about it. Anthropic's Claude models see images natively under `LLM_MODEL`. Under `LLM_PROVIDER=ollama-cloud`, an image-bearing turn prefers `OLLAMA_VISION_MODEL` — set it to a separate, vision-capable model (e.g. a Llama vision model) if the regular `LLM_MODEL` for that provider is text-only (e.g. the `gpt-oss:120b` default). If `OLLAMA_VISION_MODEL` isn't set, the turn falls back to the regular `LLM_MODEL` instead of erroring — many Ollama models already handle both text and vision, so this is often all that's needed. An attached image is saved once to disk under `DATA_DIR` and served back by a reference id; chat history and the Audit Log reference that id rather than re-embedding raw bytes, and only the most recent turn's image is ever resent to the provider as a conversation continues.
+You can paste or drag a screenshot into the AI Assistant's chat input and ask about it. Anthropic's Claude models see images natively under `LLM_MODEL`. Under `LLM_PROVIDER=ollama-cloud` or `ollama`, an image-bearing turn prefers `OLLAMA_VISION_MODEL` — set it to a separate, vision-capable model (e.g. a Llama vision model) if the regular `LLM_MODEL` for that provider is text-only (e.g. the `gpt-oss:120b` default). If `OLLAMA_VISION_MODEL` isn't set, the turn falls back to the regular `LLM_MODEL` instead of erroring — many Ollama models already handle both text and vision, so this is often all that's needed. An attached image is saved once to disk under `DATA_DIR` and served back by a reference id; chat history and the Audit Log reference that id rather than re-embedding raw bytes, and only the most recent turn's image is ever resent to the provider as a conversation continues.
 
 One more knob, standard for the Anthropic SDK and picked up automatically:
 

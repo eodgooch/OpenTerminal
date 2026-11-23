@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ollamaProvider } from "./ollama.js";
+import { ollamaProvider, ollamaSelfHostedProvider } from "./ollama.js";
+import { LlmConfigError } from "./types.js";
 
 function mockFetchOnce(status: number, body: unknown) {
   const fetchMock = vi.fn().mockResolvedValue({
@@ -211,5 +212,87 @@ describe("ollamaProvider", () => {
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.model).toBe("vision-model");
+  });
+});
+
+describe("ollamaSelfHostedProvider", () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  beforeEach(() => {
+    delete process.env.OLLAMA_API_KEY;
+    process.env.OLLAMA_BASE_URL = "http://localhost:11434";
+    delete process.env.LLM_MODEL;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("reports credentials based on OLLAMA_BASE_URL, not OLLAMA_API_KEY", () => {
+    expect(ollamaSelfHostedProvider.hasCredentials()).toBe(true);
+    delete process.env.OLLAMA_BASE_URL;
+    expect(ollamaSelfHostedProvider.hasCredentials()).toBe(false);
+    // Setting an API key alone (no base URL) still must not count as ready.
+    process.env.OLLAMA_API_KEY = "some-key";
+    expect(ollamaSelfHostedProvider.hasCredentials()).toBe(false);
+  });
+
+  it("never sends an Authorization header, even when OLLAMA_API_KEY happens to be set", async () => {
+    process.env.OLLAMA_API_KEY = "leftover-key";
+    const fetchMock = mockFetchOnce(200, { message: { content: "hello" } });
+
+    await ollamaSelfHostedProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://localhost:11434/api/chat");
+    expect(init.headers.Authorization).toBeUndefined();
+  });
+
+  it("uses OLLAMA_BASE_URL directly with no fallback to the hosted ollama.com default", async () => {
+    process.env.OLLAMA_BASE_URL = "http://my-ollama-box:11434/";
+    const fetchMock = mockFetchOnce(200, { message: { content: "ok" } });
+
+    await ollamaSelfHostedProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://my-ollama-box:11434/api/chat");
+  });
+
+  it("throws LlmConfigError instead of silently defaulting when OLLAMA_BASE_URL is unset", async () => {
+    delete process.env.OLLAMA_BASE_URL;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      ollamaSelfHostedProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] })
+    ).rejects.toThrow(LlmConfigError);
+    await expect(
+      ollamaSelfHostedProvider.chat({ system: "sys", messages: [{ role: "user", content: "hi" }] })
+    ).rejects.toThrow(/OLLAMA_BASE_URL/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still does native tool-calling and response parsing identically to ollama-cloud", async () => {
+    mockFetchOnce(200, {
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "call_1", function: { name: "search_news", arguments: { symbol: "AAPL" } } }],
+      },
+      prompt_eval_count: 10,
+      eval_count: 5,
+    });
+
+    const result = await ollamaSelfHostedProvider.chat({
+      system: "sys",
+      messages: [{ role: "user", content: "AAPL news?" }],
+      tools: [
+        { name: "search_news", description: "d", parameters: { type: "object", properties: {}, required: [] } },
+      ],
+    });
+
+    expect(result.toolCalls).toEqual([{ id: "call_1", name: "search_news", arguments: { symbol: "AAPL" } }]);
+    expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 5 });
   });
 });
