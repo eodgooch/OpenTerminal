@@ -588,10 +588,11 @@ describe("POST /api/ai/chat", () => {
       delete process.env.OLLAMA_VISION_MODEL;
     });
 
-    it("503s with an actionable message when an image is attached under ollama-cloud but OLLAMA_VISION_MODEL is unset", async () => {
+    it("falls back to LLM_MODEL when an image is attached under ollama-cloud but OLLAMA_VISION_MODEL is unset", async () => {
       process.env.LLM_PROVIDER = "ollama-cloud";
       process.env.OLLAMA_API_KEY = "test-key";
-      const fetchMock = fakeFetch(200, { message: { content: "should never be reached" } });
+      process.env.LLM_MODEL = "qwen2.5vl";
+      const fetchMock = fakeFetch(200, { message: { content: "that's a chart of AAPL" } });
       vi.stubGlobal("fetch", fetchMock);
       const handler = getHandler("/chat");
       const req = {
@@ -601,9 +602,9 @@ describe("POST /api/ai/chat", () => {
 
       await handler(req, res, () => {});
 
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect((res.json as any).mock.calls[0][0].error).toMatch(/OLLAMA_VISION_MODEL/);
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalledWith(503);
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.model).toBe("qwen2.5vl");
     });
 
     it("does not require OLLAMA_VISION_MODEL for an image-bearing turn under anthropic", async () => {
